@@ -1,10 +1,3 @@
-install.packages("gitcreds")
-gitcreds::gitcreds_set()
-
-
-obj <- c('Hello World')
-install.packages('usethis')
-library(usethis)
-use_git()
-use_github()
-# testing
+# Testing
+library(readxl)
+Freely_quote_data <- read_excel("Freely_quote_data.xlsx", sheet = "Quotes")
