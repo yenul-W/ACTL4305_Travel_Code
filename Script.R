@@ -14,14 +14,28 @@ library(countrycode)
 library(purrr)
 library(stringr)
 library(lubridate)
-
+library(janitor)
+library(zoo)
 
 ### ============================================================================
-### 2. load dataset
+### 2.1 LOAD DATA
 ### ============================================================================
 setwd("C:/Users/yenul/Downloads/ACTL4305")
+# load freely data
 Freely_quote_data <- read_excel("Freely_quote_data.xlsx", sheet = "Quotes")
 data <- Freely_quote_data
+
+### ============================================================================
+### 2.2 LOAD EXTERNAL DATA
+### ============================================================================
+# temperature data by country
+temp_data <- read.csv(url("https://docs.google.com/spreadsheets/d/e/2PACX-1vRy9lR_B64ihA3E6U8JiNoM7L1h1mmvihlOmkjj7JGBk4BulbrOpaKs4yFYCGJ0yA/pub?gid=746821759&single=true&output=csv"))
+
+# exchange rate data by country by date
+forex_data <- read.csv(url("https://docs.google.com/spreadsheets/d/e/2PACX-1vR8LZbHutSotFzRADuoZ4BDYweV4zTianXzdjPCboE5LLFOeWKisIJMOUcLk98HIw/pub?gid=1874790206&single=true&output=csv"))
+forex_data$Date <- as.Date(forex_data$Date, format = "%d-%b-%Y")
+forex_data <- forex_data%>%
+  janitor::clean_names()
 
 ### ============================================================================
 ### 3. DATA CLEANING
@@ -623,9 +637,407 @@ data <- data %>%
   select(-ages_list, -ends_with("_count"))
 
 ### ============================================================================
-### 4. EDA
+### 4. ADDING EXTERNAL DATA
 ### ============================================================================
+### ============================================================================
+### 4.1 OTHER EXTERNAL VARIABLES
+### ============================================================================
+# english-speaking variable
+english_speaking <- c(
+  "^usa$|^united states$|^america$|^all of north america$|^hawaii$",
+  ".*\\buk\\b.*|.*united kingdom.*|.*england.*|.*scotland.*|.*wales.*",
+  "ireland", "canada", "australia", "new zealand", "south africa",
+  "singapore", "malta", "jamaica", "barbados", "bahamas",
+  "trinidad and tobago", "belize", "fiji", "guyana", "cook islands")
+
+english_speaking <- str_c(english_speaking, collapse = "|")
+
+data <- data %>%
+  mutate(
+    dest_list = str_split(str_to_lower(destinations), ";\\s*"),
+    english_pct = sapply(dest_list, function(x) {
+      mean(str_detect(x, english_speaking))})) %>%
+  select(-dest_list)
+
+# dummy if quote date is close to pay day (1st or 15th of every month)
+data <- data %>%
+  mutate(
+    day = day(quote_date),
+    payday = if_else(day %in% c(1:4, 15:18), 1, 0)) %>%
+  select(-day)
+
+data <- data %>%
+  mutate(
+    # price per traveller
+    price_per_traveller = quote_price / number_travellers,
+    # trip length
+    trip_length = as.numeric(trip_end_date - trip_start_date),
+    # quote creator age
+    quote_creator_age = as.numeric(sub(";.*", "", traveller_ages)),
+    # day of week
+    day_of_week = wday(quote_date, label = TRUE, abbr = TRUE))
+
+### ============================================================================
+### 4.2 DESTINATION-LINKED VARIABLES
+### ============================================================================
+# merge currency volatility
+currency_map <- data.frame(
+  country = c(
+    "ALGERIA","Australia","Austria","Belgium","Botswana","Brazil",
+    "Brunei Darussalam","Canada","Chile","China","Cyprus","Czech Republic",
+    "Denmark","ESTONIA","European Monetary Union","Finland","France","Germany",
+    "Greece","India","Ireland","Israel","Italy","Japan",
+    "Korea","Kuwait","Luxembourg","Malaysia","Malta","Mauritius",
+    "Mexico","Netherlands,The","New Zealand","Norway","Oman","PERU","PHILIPPINES",
+    "Poland","Portugal","Qatar","SAN MARINO","Saudi Arabia","Singapore","Slovak Republic",
+    "Slovenia","Spain","Sweden","Switzerland","Thailand","Trinidad and Tobago",
+    "URUGUAY","United Arab Emirates","United Kingdom","United States"),
+  currency = c(
+    "DZD","AUD","EUR","EUR","BWP","BRL",
+    "BND","CAD","CLP","CNY","EUR","CZK",
+    "DKK","EUR","EUR","EUR","EUR","EUR",
+    "EUR","INR","EUR","ILS","EUR","JPY",
+    "KRW","KWD","EUR","MYR","EUR","MUR",
+    "MXN","EUR","NZD","NOK","OMR","PEN","PHP",
+    "PLN","EUR","QAR","EUR","SAR","SGD","EUR",
+    "EUR","EUR","SEK","CHF","THB","TTD",
+    "UYU","AED","GBP","USD"),
+  stringsAsFactors = FALSE)
+
+data <- data %>%
+  mutate(dest_list = str_split(destinations, ";\\s*"))
+
+get_major_currency <- function(dest_vector, currency_map, fallback = "USD") {
+  currencies <- currency_map$currency[match(dest_vector, currency_map$country)]
+  currencies <- currencies[!is.na(currencies)]
+  if(length(currencies) == 0) return(fallback)
+  return(currencies[1])}
+
+data <- data %>%
+  rowwise() %>%
+  mutate(
+    quote_currency = get_major_currency(dest_list[[1]], currency_map)) %>%
+  ungroup()
+
+fx_long <- forex_data %>%
+  pivot_longer(
+    cols = -date,
+    names_to = "currency",
+    values_to = "rate"
+  ) %>%
+  mutate(currency = toupper(str_sub(currency, -3, -1)))
+
+fx_long <- fx_long %>%
+  arrange(currency, date) %>%
+  group_by(currency) %>%
+#  filter(is.na(rate) == 0) %>%
+  mutate(
+    pct_change_14 = (rate - lag(rate, 14)) / lag(rate, 14) * 100) %>%
+  ungroup()
+
+data <- data %>%
+  left_join(fx_long, by = c("quote_date" = "date", "quote_currency" = "currency"))
+
+### ============================================================================
+### 5. EDA
+### ============================================================================
+# conversion by platform
+data %>%
+  mutate(convert_flag = if_else(convert == "YES", 1, 0)) %>%
+  group_by(platform) %>%
+  summarise(conv_rate = mean(convert_flag, na.rm = TRUE)) %>%
+  ggplot(aes(x = platform, y = conv_rate, fill = platform)) +
+  geom_col(show.legend = FALSE) +
+  labs(title = "Conversion Rate by Platform", y = "Conversion Rate", x = "")
+
+# conversion over time
+data %>%
+  mutate(convert_flag = if_else(convert == "YES", 1, 0)) %>%
+  group_by(quote_date) %>%
+  summarise(conv_rate = mean(convert_flag)) %>%
+  ggplot(aes(x = quote_date, y = conv_rate)) +
+  geom_line() +
+  labs(title = "Conversion Rate Over Time",
+       x = "Quote Date", y = "Conversion Rate") +
+  scale_y_continuous(labels = scales::percent)
+
+# number of travellers vs. conversions
+ggplot(data, aes(x = number_travellers, fill = convert)) +
+  geom_histogram(position = "fill", bins = 30) +
+  labs(title = "Traveller Count Distribution by Conversion",
+       x = "Number of Travellers", y = "Conversion Rate")
+
+# has children vs. conversions
+data %>%
+  mutate(convert_flag = if_else(convert == "YES", 1, 0)) %>%
+  group_by(has_children) %>%
+  summarise(conv_rate = mean(convert_flag)) %>%
+  ggplot(aes(x = factor(has_children), y = conv_rate, fill = factor(has_children))) +
+  geom_col(show.legend = FALSE) +
+  geom_text(aes(label = scales::percent(conv_rate, 0.1)), vjust = -0.5) +
+  labs(title = "Conversion Rate by Presence of Children",
+       x = "Has Children", y = "Conversion Rate") +
+  scale_y_continuous(labels = scales::percent)
+
+# discount effect
+data %>%
+  mutate(convert_flag = if_else(convert == "YES", 1, 0)) %>%
+  mutate(discount_bin = cut(discount,
+                            breaks = c(-Inf, 0, 0.1, 0.2, Inf),
+                            labels = c("None", "<10%", "10–20%", ">20%"))) %>%
+  group_by(discount_bin) %>%
+  summarise(conv_rate = mean(convert_flag)) %>%
+  ggplot(aes(x = discount_bin, y = conv_rate, fill = discount_bin)) +
+  geom_col(show.legend = FALSE) +
+  geom_text(aes(label = scales::percent(conv_rate, 0.1)), vjust = -0.5) +
+  labs(title = "Conversion Rate by Discount Level",
+       x = "Discount Range", y = "Conversion Rate") +
+  scale_y_continuous(labels = scales::percent)
+
+# price per traveller vs. conversion rate
+ggplot(data, aes(x = convert, y = price_per_traveller, fill = convert)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.7) +
+  coord_cartesian(ylim = quantile(data$price_per_traveller, c(0.05, 0.95))) +
+  scale_y_continuous(labels = scales::dollar_format(prefix = "$")) +
+  labs(
+    title = "Price per Traveller by Conversion Outcome",
+    x = "Conversion", y = "Price per Traveller"
+  ) +
+  theme_minimal()
+
+# conversion rate vs price by platform
+data %>%
+  mutate(price_band = cut(price_per_traveller,
+                          breaks = seq(0, 800, by = 50),
+                          include.lowest = TRUE)) %>%
+  group_by(platform, price_band) %>%
+  summarise(conv_rate = mean(convert == "YES"), .groups = "drop") %>%
+  ggplot(aes(x = price_band, y = conv_rate, color = platform, group = platform)) +
+  geom_line() +
+  geom_point() +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
+  labs(
+    title = "Binned Conversion Rate by Price per Traveller and Platform",
+    x = "Price per Traveller Range", y = "Conversion Rate"
+  ) +
+  theme_minimal()
+
+# conversion rate by price group
+data %>%
+  mutate(price_band = cut(price_per_traveller,
+                          breaks = c(0, 50, 100, 200, 400, 800, Inf),
+                          labels = c("<$50", "$50–100", "$100–200", "$200–400", "$400–800", ">$800"))) %>%
+  group_by(price_band) %>%
+  summarise(conv_rate = mean(convert == "YES", na.rm = TRUE)) %>%
+  ggplot(aes(x = price_band, y = conv_rate, fill = price_band)) +
+  geom_col(show.legend = FALSE) +
+  geom_text(aes(label = scales::percent(conv_rate, 0.1)), vjust = -0.5) +
+  labs(
+    title = "Conversion Rate by Price Band",
+    x = "Price per Traveller Range", y = "Conversion Rate"
+  ) +
+  scale_y_continuous(labels = scales::percent) +
+  theme_minimal()
+
+# trip length and conversion rates
+ggplot(data, aes(x = trip_length, fill = convert)) +
+  geom_histogram(position = "fill", bins = 15) +
+  labs(title = "Trip Length Distribution by Conversion",
+       x = "Trip Length (Days)", y = "Conversion Rate")
+
+# conversion rate vs age by platform
+data %>%
+  mutate(convert_flag = if_else(convert == "YES", 1, 0)) %>%
+  mutate(age_band = cut(quote_creator_age, breaks = seq(18, 90, by = 10),
+                        right = FALSE, include.lowest = TRUE)) %>%
+  filter(!is.na(age_band)) %>% 
+  group_by(platform, age_band) %>%
+  summarise(conv_rate = mean(convert_flag, na.rm = TRUE), .groups = "drop") %>%
+  ggplot(aes(x = age_band, y = conv_rate, color = platform, group = platform)) +
+  geom_line(size = 1) +
+  geom_point() +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
+  labs(
+    title = "Conversion Rate by Age Group and Platform",
+    x = "Quote Creator Age Band",
+    y = "Conversion Rate") +
+  theme_minimal()
+
+ggplot(data, aes(x = quote_creator_age, fill = platform)) +
+  geom_density(alpha = 0.3) +
+  labs(title = "Distribution of Quote Creator Age by Platform", x = "Age", y = "Density") +
+  theme_minimal()
+
+
+# conversion by english_speaking destination
+ggplot(data, aes(x = english_pct)) +
+  geom_histogram(binwidth = 0.2, fill = "steelblue", color = "white") +
+  scale_x_continuous(labels = scales::percent_format()) +
+  labs(
+    title = "Distribution of English-speaking Traveller Proportion",
+    x = "English-speaking Proportion",
+    y = "Number of Quotes"
+  ) +
+  theme_minimal()
+
+# conversion rate by hour of day
+data %>%
+  mutate(
+    quote_time = hms::as_hms(quote_time),             
+    hour = hour(quote_time),                          
+    minute = minute(quote_time),
+    part_of_day = case_when(                          
+      hour < 6  ~ "Early Morning",
+      hour < 12 ~ "Morning",
+      hour < 17 ~ "Afternoon",
+      hour < 21 ~ "Evening",
+      TRUE ~ "Late Night"),
+    convert_flag = if_else(convert == "YES", 1, 0)) %>%
+  group_by(hour) %>%
+  summarise(conv_rate = mean(convert_flag, na.rm = TRUE)) %>%
+  ggplot(aes(x = hour, y = conv_rate)) +
+  geom_line(size = 1, color = "steelblue") +
+  geom_point() +
+  scale_y_continuous(labels = scales::percent, limits = c(0.075, 0.15)) +
+  labs(
+    title = "Conversion Rate by Hour of Quote",
+    x = "Hour of Day",
+    y = "Conversion Rate") +
+  theme_minimal()
+
+# quote number by hour of day
+data %>%
+  mutate(
+    quote_time = hms::as_hms(quote_time),             
+    hour = hour(quote_time),                          
+    minute = minute(quote_time),
+    part_of_day = case_when(                          
+      hour < 6  ~ "Early Morning",
+      hour < 12 ~ "Morning",
+      hour < 17 ~ "Afternoon",
+      hour < 21 ~ "Evening",
+      TRUE ~ "Late Night"),
+    convert_flag = if_else(convert == "YES", 1, 0)) %>%
+  count(hour) %>%
+  ggplot(aes(x = hour, y = n)) +
+  geom_col(fill = "skyblue") +
+  labs(
+    title = "Number of Quotes by Hour of Day",
+    x = "Hour of Day",
+    y = "Number of Quotes") +
+  theme_minimal()
+
+# conversion rate vs. time of day and platform
+data %>%
+  mutate(
+    quote_time = hms::as_hms(quote_time),             
+    hour = hour(quote_time),                          
+    minute = minute(quote_time),
+    part_of_day = case_when(                          
+      hour < 6  ~ "Early Morning",
+      hour < 12 ~ "Morning",
+      hour < 17 ~ "Afternoon",
+      hour < 21 ~ "Evening",
+      TRUE ~ "Late Night"),
+    convert_flag = if_else(convert == "YES", 1, 0)) %>%
+  group_by(platform, part_of_day) %>%
+  summarise(conv_rate = mean(convert_flag, na.rm = TRUE), .groups = "drop") %>%
+  ggplot(aes(x = part_of_day, y = conv_rate, fill = platform)) +
+  geom_col(position = "dodge") +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
+  labs(
+    title = "Conversion Rate by Part of Day and Platform",
+    x = "Time of Day",
+    y = "Conversion Rate"
+  ) +
+  theme_minimal()
+
+# conversion rate vs. day of week by platform
+data %>%
+  mutate(convert_flag = if_else(convert == "YES", 1, 0)) %>%
+  group_by(platform, day_of_week) %>%
+  summarise(conv_rate = mean(convert_flag, na.rm = TRUE), .groups = "drop") %>%
+  ggplot(aes(x = day_of_week, y = conv_rate, fill = platform)) + 
+  geom_col(position = "dodge") +
+  scale_y_continuous(labels = scales::percent, limits = c(0,0.5)) +
+  labs(title = "Conversion Rate by Day of Week and Platform",
+       x = "Day of Week", y = "Conversion Rate") +
+  theme_minimal()
+
+# conversion rate vs. traveller type
+data %>%
+  mutate(convert_flag = if_else(convert == "YES", 1, 0)) %>%
+  select(convert_flag, family, has_children, solo, couple, any_young_adult, any_middle_age) %>%
+  pivot_longer(cols = -convert_flag,
+               names_to = "traveller_type",
+               values_to = "present") %>%
+  filter(present == 1) %>%
+  group_by(traveller_type) %>%
+  summarise(conv_rate = mean(convert_flag, na.rm = TRUE), .groups = "drop") %>%
+  ggplot(aes(x = traveller_type, y = conv_rate, fill = traveller_type)) +
+  geom_col(show.legend = FALSE) +
+  geom_text(aes(label = scales::percent(conv_rate, 0.1)), vjust = -0.5) +
+  scale_y_continuous(labels = scales::percent, limits = c(0,0.18)) +
+  labs(title = "Conversion Rate by Traveller Type",
+       x = "Traveller Type",
+       y = "Conversion Rate") +
+  theme_minimal()
+
+# conversion rate vs. forex volatility
+data %>%
+  mutate(convert_flag = if_else(convert == "YES", 1, 0),
+         pct_change_bin = cut(pct_change_14, breaks = seq(-20, 20, by = 2))) %>%
+  filter(!is.na(pct_change_14)) %>%
+  group_by(pct_change_bin) %>%
+  summarise(conv_rate = mean(convert_flag, na.rm = TRUE), .groups = "drop") %>%
+  mutate(bin_mid = (as.numeric(sub("\\((.+),.*", "\\1", pct_change_bin)) +
+                      as.numeric(sub("[^,]*,([^]]*)\\]", "\\1", pct_change_bin))) / 2) %>%
+  ggplot(aes(x = bin_mid, y = conv_rate)) +
+  geom_line(color = "darkblue") +
+  geom_point(aes(color = conv_rate), size = 3) +
+  scale_y_continuous(labels = percent_format()) +
+  labs(
+    title = "Conversion Rate vs FX % Change (past 14 values against USD)",
+    x = "FX % Change",
+    y = "Conversion Rate"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 # heatmap of conversion rates by region
+data %>%
+  separate_rows(destinations, sep = ";\\s*") %>%
+  mutate(destinations = str_trim(destinations)) %>%
+  mutate(convert = ifelse(convert %in% c("yes", "1", "TRUE"), 1, 0)) %>%
+  group_by(destinations) %>%
+  summarise(
+    total_quotes = n(),
+    conversions = sum(convert, na.rm = TRUE),
+    conversion_rate = conversions / total_quotes) %>%
+  arrange(desc(conversion_rate))
+
+
 df_long <- data %>%
   pivot_longer(
     cols = c(europe, east_asia, south_asia, middle_east, africa, 
