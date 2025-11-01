@@ -1,0 +1,3099 @@
+---
+title: "UG20_reproducible_code"
+output: html_document
+date: "2025-10-28"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Load Packages and Data
+## Load Packages
+
+```{r load_packages, echo=FALSE, warning=FALSE, message=FALSE}
+# function to load packages and install if not already installed
+load <- function(package_names) {
+  for(package_name in package_names) {
+    if(!require(package_name, character.only = TRUE)) {
+      install.packages(package_name)
+      library(package_name, character.only = TRUE)
+    }
+  }
+}
+
+load('readxl')
+load('dplyr')
+load('tidyr')
+load('maps')
+load('sf')
+load('ggplot2')
+load('stringr')
+load('countrycode')
+load('purrr')
+load('stringr')
+load('lubridate')
+load('janitor')
+load('zoo')
+load('scales')
+load('plotly')
+load('xgboost')
+load('rBayesianOptimization')
+load('caret')
+load('Matrix')
+load('SHAPforxgboost')
+load('MLmetrics')
+load('pROC')
+load('fastDummies')
+load('statmod')
+load('glmnet')
+load('doParallel')
+load('PRROC')
+load('tidytext')
+load('pdp')
+
+```
+
+## Load Freely Data
+```{r load_freely, echo=FALSE, warning=FALSE, message=FALSE}
+setwd("C:/Users/yenul/Downloads/ACTL4305")
+# load freely data from local working directory, adjust path if needed
+Freely_quote_data <- read_excel("Freely_quote_data.xlsx", sheet = "Quotes")
+data <- Freely_quote_data
+
+```
+
+## Load External Data
+```{r load_ext, echo=FALSE, warning=FALSE, message=FALSE}
+# temperature data by country
+temp_data <- read.csv(url("https://docs.google.com/spreadsheets/d/e/2PACX-1vRy9lR_B64ihA3E6U8JiNoM7L1h1mmvihlOmkjj7JGBk4BulbrOpaKs4yFYCGJ0yA/pub?gid=746821759&single=true&output=csv"))
+
+# exchange rate data by country by date
+forex_data <- read.csv(url("https://docs.google.com/spreadsheets/d/e/2PACX-1vR8LZbHutSotFzRADuoZ4BDYweV4zTianXzdjPCboE5LLFOeWKisIJMOUcLk98HIw/pub?gid=1874790206&single=true&output=csv"))
+forex_data$Date <- as.Date(forex_data$Date, format = "%d-%b-%Y")
+forex_data <- forex_data%>%
+  janitor::clean_names()
+currency_cols <- setdiff(names(forex_data), "date")
+forex_data[currency_cols] <- lapply(currency_cols, function(col) {
+  forex_data[[col]] / forex_data$australian_dollar_aud})
+
+# google trends
+gt_travel_insurance <- read.csv(url("https://docs.google.com/spreadsheets/d/e/2PACX-1vTKgVCtjuU4V2zkrfiLxOcRnQEHDyn7Fe8RO64_oaGlRXAMf1-1GEsbHP2XcjyDBEgzqYkuBRncBXYP/pub?gid=777635616&single=true&output=csv"))
+gt_travel_insurance <- janitor::clean_names(gt_travel_insurance)
+gt_travel_insurance_daily <- gt_travel_insurance %>%
+  dplyr::mutate(week = as.Date(week)) %>%
+  tidyr::uncount(7) %>%                                   
+  dplyr::group_by(week) %>%
+  dplyr::mutate(date = week + (dplyr::row_number() - 1)) %>%  
+  dplyr::ungroup() %>%
+  dplyr::transmute(
+    date = as.Date(date),
+    gtrend_travel_ins = travel_insurance_australia
+  )
+
+# ABS trends
+abs_by_age <- read.csv(url("https://docs.google.com/spreadsheets/d/e/2PACX-1vREVnhczQGCB-IeKIHyBqQQsS6lmIDfc2_FHuC0PCV1DEfbmWdYt4wUaRv6apVV0Wfr8bXv_qHu66F5/pub?gid=114299855&single=true&output=csv"))
+abs_by_age <- janitor::clean_names(abs_by_age)
+abs_by_age <- abs_by_age %>%
+  dplyr::mutate(
+    age   = as.integer(age),
+    total = as.numeric(total))
+abs_by_age <- abs_by_age %>%
+  dplyr::mutate(abs_age_share = total / sum(total))
+
+# Global Peace index
+peace_index <- read.csv(
+  url("https://docs.google.com/spreadsheets/d/e/2PACX-1vSCjXipNqILguZALp5R0b7aWYmcAGAuLbxlDCApSZdjYDxw1bPWEv357ipk2RL8sg/pub?gid=1375262227&single=true&output=csv"))
+
+# Travel Behavioural Factors (Survey Data)
+travel_behaviour <- read.csv(url("https://docs.google.com/spreadsheets/d/e/2PACX-1vQudGwaEa2RsOxFsRNTNjeP8IFXWWS2ntjTXlIAqpS65fmEiWyFfHU5zY2JNzCk7w/pub?gid=580087113&single=true&output=csv"))
+
+# load cities
+data(world.cities)
+city_lookup <- world.cities %>%
+  mutate(
+    city_clean = str_to_lower(name),
+    country_clean = str_to_lower(country.etc)
+  ) %>%
+  dplyr::select(city_clean, country_clean) %>%
+  distinct()
+
+# purchasing power index
+ppp <- read.csv(
+  url("https://docs.google.com/spreadsheets/d/e/2PACX-1vTS75iif3KmnxQ78EkfdtqfmktInOEBQx2-eawDDPdzFhCoxXJWHOCfwh-42LzbcA/pub?gid=374751837&single=true&output=csv")) %>%
+  clean_names() %>%
+  mutate(
+    country = country_region %>%
+      str_remove_all("\\*") %>%   
+      str_squish()
+  ) %>%
+  transmute(
+    country,
+    purchasing_index  = suppressWarnings(as.numeric("Purchasing power index")),
+    pp_rel_to_aus     = suppressWarnings(as.numeric(pp_relative_to_aus))
+  ) %>%
+  filter(!is.na(country))
+```
+
+# Data Cleaning
+Check for missing data.
+```{r missing_data, echo=FALSE, warning=FALSE, message=FALSE}
+print(sapply(data, function(x) sum(is.na(x))))
+
+```
+
+## Date Cleaning
+```{r date_clean, echo=FALSE, warning=FALSE, message=FALSE}
+# --- Helper Function, normalize empty data/markers to NA ----------------------------
+na_tokens <- c("", "NA", "N/A", "n/a", "-", "--", "null", "NULL")
+norm_na <- function(x) {
+  x_chr <- str_trim(as.character(x))
+  x_chr[x_chr %in% na_tokens] <- NA_character_
+  x_chr
+}
+
+# Character normalizer 
+norm_chr <- function(x) {
+  out <- trimws(as.character(x))
+  out[out %in% na_tokens] <- NA_character_
+  out
+}
+is_plausible_excel <- function(n) is.finite(n) & n > 10 & n < 100000  
+
+# --- Helper Function, takes in different date values and turn them into a proper R Date -------------
+to_date_robust <- function(x) {
+  x_chr <- norm_na(x)
+  num    <- suppressWarnings(as.numeric(x_chr))
+  is_num <- !is.na(num)
+  out    <- rep(as.Date(NA), length(x_chr))
+  if (any(is_num)) {
+    plausible <- num > 10 & num < 100000
+    out[is_num & plausible] <- as.Date(num[is_num & plausible], origin = "1899-12-30")
+  }
+  to_parse <- which(!is_num & !is.na(x_chr))
+  if (length(to_parse)) {
+    orders <- c("Ymd","dmY","mdY","dmy","mdy","ymd","d-b-Y","d-b-y","b-d-Y","b d Y","d b Y",
+                "Ymd HMS","Ymd HM","Ymd H","dmy HMS","mdy HMS","ymd HMS")
+    parsed <- suppressWarnings(parse_date_time(x_chr[to_parse], orders = orders, tz = "UTC"))
+    out[to_parse] <- as.Date(parsed)
+  }
+  out
+}
+
+# --- Parser for date times, handles both Excel number dates and text date/time formats -----
+to_time_robust <- function(x, tz = "Australia/Sydney") {
+  x_chr  <- norm_na(x)
+  num    <- suppressWarnings(as.numeric(x_chr))
+  is_num <- !is.na(num)
+  out    <- rep(as.POSIXct(NA, tz = tz), length(x_chr))
+  if (any(is_num)) {
+    plausible <- num > 10 & num < 100000
+    out[is_num & plausible] <- as.POSIXct(num[is_num & plausible] * 86400,
+                                          origin = "1899-12-30", tz = tz)
+  }
+  to_parse <- which(!is_num & !is.na(x_chr))
+  if (length(to_parse)) {
+    orders <- c("Ydm HMS","Ydm HM","Ydm H","Ydm","Ymd HMS","Ymd HM","Ymd H","Ymd")
+    out[to_parse] <- suppressWarnings(parse_date_time(x_chr[to_parse], orders = orders, tz = tz))
+  }
+  out
+}
+
+### ---------------------- Logical rules for dates ---------------------- ###
+tz_use <- "Australia/Sydney"
+
+# date coercer function
+as_date_robust <- function(x) {
+  if (inherits(x, "Date")) return(x)
+  x_chr <- trimws(as.character(x))
+  x_chr[x_chr %in% na_tokens] <- NA
+  out <- rep(as.Date(NA), length(x_chr))
+  num <- suppressWarnings(as.numeric(x_chr))
+  is_num <- !is.na(num)
+  if (any(is_num)) {
+    serial <- num[is_num]
+    plaus  <- serial > 10 & serial < 100000
+    out[is_num][plaus] <- as.Date(serial[plaus], origin = "1899-12-30")
+  }
+  need <- is.na(out) & !is.na(x_chr)
+  if (any(need)) {
+    parsed <- suppressWarnings(lubridate::parse_date_time(
+      x_chr[need],
+      orders = c("Ymd","ymd","dmy","mdy","Y-m-d","d-m-Y","m-d-Y"),
+      tz = "UTC"
+    ))
+    out[need] <- as.Date(parsed)
+  }
+  out
+}
+
+as_datetime_robust <- function(x, tz = tz_use) {
+  if (inherits(x, "POSIXct")) return(x)
+  x_chr <- trimws(as.character(x))
+  x_chr[x_chr %in% na_tokens] <- NA
+  out <- as.POSIXct(rep(NA_real_, length(x_chr)), origin = "1970-01-01", tz = tz)
+  num <- suppressWarnings(as.numeric(x_chr))
+  is_num <- !is.na(num)
+  if (any(is_num)) {
+    serial <- num[is_num]
+    plaus  <- serial > 10 & serial < 100000
+    out[is_num][plaus] <- as.POSIXct(serial[plaus] * 86400, origin = "1899-12-30", tz = tz)
+  }
+  need <- is.na(out) & !is.na(x_chr)
+  if (any(need)) {
+    parsed <- suppressWarnings(lubridate::parse_date_time(
+      x_chr[need],
+      orders = c(
+        "Ymd HMS","Ymd HM","Ymd H","ymd HMS","ymd HM","ymd H",
+        "dmy HMS","dmy HM","dmy H","mdy HMS","mdy HM","mdy H",
+        "Y-m-d H:M:S","Y-m-d H:M","Y-m-d H","d-m-Y H:M:S","m-d-Y H:M:S",
+        "Ymd","ymd","dmy","mdy","Y-m-d","d-m-Y","m-d-Y"
+      ),
+      tz = tz
+    ))
+    out[need] <- as.POSIXct(parsed, tz = tz)
+  }
+  out
+}
+
+# dd<->mm swap helpers (only when both ≤ 12 and not equal)
+ddmm_swap_possible <- function(d) !is.na(d) & day(d) <= 12 & month(d) <= 12 & day(d) != month(d)
+ddmm_swap <- function(d) make_date(year(d), month = day(d), day = month(d))
+
+
+# ---------------- Swapping and Capping Date Logic ----------------
+# 1) Parse quote_create_time, then split & drop 
+data <- data %>%
+  mutate(quote_id = row_number()) %>%
+  relocate(quote_id) %>%
+  mutate(quote_create_time = case_when(
+    suppressWarnings(!is.na(as.numeric(quote_create_time))) ~
+      as_datetime(as.numeric(quote_create_time) * 86400, origin = "1899-12-30"),
+    TRUE ~ as_datetime(quote_create_time, format = "%Y-%d-%m %H:%M:%S")),
+    quote_date = as.Date(quote_create_time),
+    quote_time = format(quote_create_time, "%H:%M:%S")) %>%
+  dplyr::select(-quote_create_time)
+
+# 2) FIX TRIP START/END DATES 
+data <- data %>%
+  mutate(
+    .ts_chr = norm_chr(trip_start_date),
+    .te_chr = norm_chr(trip_end_date),
+    .ts_num = suppressWarnings(as.numeric(.ts_chr)),
+    .te_num = suppressWarnings(as.numeric(.te_chr)),
+    trip_start_date = dplyr::case_when(
+      !is.na(.ts_num) & is_plausible_excel(.ts_num) ~
+        as_date(.ts_num, origin = "1899-12-30"),
+      !is.na(suppressWarnings(lubridate::dmy(.ts_chr))) ~
+        suppressWarnings(lubridate::dmy(.ts_chr)),
+      TRUE ~ suppressWarnings(lubridate::mdy(.ts_chr))
+    ),
+    trip_end_date = dplyr::case_when(
+      !is.na(.te_num) & is_plausible_excel(.te_num) ~
+        as_date(.te_num, origin = "1899-12-30"),
+      !is.na(suppressWarnings(lubridate::dmy(.te_chr))) ~
+        suppressWarnings(lubridate::dmy(.te_chr)),
+      TRUE ~ suppressWarnings(lubridate::mdy(.te_chr))
+    )
+  ) %>%
+  dplyr::select(-.ts_chr, -.te_chr, -.ts_num, -.te_num)
+
+# 3) mm↔dd swap helper 
+swap_ddmm <- function(x) {
+  make_date(
+    year  = year(x),
+    day   = month(x),   
+    month = day(x)      
+  )
+}
+
+# 4) Rule 1 swap: if start < quote_date, swap START (only when day <= 12)
+data <- data %>%
+  mutate(
+    trip_start_date_raw = ymd(trip_start_date),
+    trip_start_date_swapped = if_else(trip_start_date_raw < quote_date, 1L, 0L),
+    trip_start_date = if_else(
+      trip_start_date_raw < quote_date,
+      swap_ddmm(trip_start_date_raw),
+      trip_start_date_raw
+    )
+  ) %>%
+  dplyr::select(-trip_start_date_raw)
+
+# 5) Rule 2 swaps
+data <- data %>%
+  mutate(
+    trip_start_date_raw = ymd(trip_start_date, quiet = TRUE),
+    trip_end_date_raw   = ymd(trip_end_date,   quiet = TRUE),
+    
+    trip_end_date_swapped = 0L,
+    
+    # Case 1: if end <= start and end is dd-ambiguous (day <= 12), swap END
+    trip_end_date = case_when(
+      trip_end_date_raw <= trip_start_date_raw & day(trip_end_date_raw) <= 12 ~
+        swap_ddmm(trip_end_date_raw),
+      TRUE ~ trip_end_date_raw
+    ),
+    trip_end_date_swapped = if_else(
+      trip_end_date_raw <= trip_start_date_raw & day(trip_end_date_raw) <= 12, 1L, 0L
+    ),
+    
+    # Case 2: still end <= start, swap START (only if day <= 12 and not already swapped)
+    trip_start_date = case_when(
+      trip_end_date_raw <= trip_start_date_raw &
+        day(trip_start_date_raw) <= 12 &
+        trip_start_date_swapped == 0L ~ swap_ddmm(trip_start_date_raw),
+      TRUE ~ trip_start_date_raw
+    ),
+    trip_start_date_swapped = if_else(
+      trip_end_date_raw <= trip_start_date_raw &
+        day(trip_start_date_raw) > 12 &
+        trip_start_date_swapped == 0L, 1L, trip_start_date_swapped
+    ),
+    
+    # Case 3: if start == end, swap END if possible AND it makes end > start
+    trip_end_date = if_else(
+      trip_end_date == trip_start_date &
+        day(trip_end_date) <= 12 &
+        swap_ddmm(trip_end_date) > trip_start_date,
+      swap_ddmm(trip_end_date),
+      trip_end_date
+    )
+  ) %>%
+  dplyr::select(-trip_start_date_raw, -trip_end_date_raw, -trip_end_date_swapped, -trip_start_date_swapped)
+
+
+# --- Check violations ---
+viol_start_after_end <- with(data,
+                             !is.na(trip_start_date) & !is.na(trip_end_date) & trip_start_date > trip_end_date
+)
+viol_quote_after_start <- with(data,
+                               !is.na(quote_date) & !is.na(trip_start_date) & quote_date > trip_start_date
+)
+cat("Rows where departure (start) > return (end):", sum(viol_start_after_end, na.rm = TRUE), "\n")
+cat("Rows where quote_date > departure (start):", sum(viol_quote_after_start, na.rm = TRUE), "\n")
+
+
+
+# Now apply the original capping rules (Rule 1 then Rule 2), using the potentially swapped dates
+## ==================== Rule 1: quote date ≤ departure date ====================
+## ==================== Rule 1: quote date ≤ departure date (cap START, not quote) ====================
+# Ensure quote_date exists (Date from quote_create_time)
+#if (!"quote_date" %in% names(data)) {
+#data$quote_date <- as.Date(data$quote_create_time, tz = tz_use)
+#}
+
+# Flag violations: quote_date after start date
+#data$quote_after_departure <- ifelse(
+#is.na(data$quote_date) | is.na(data$trip_start_date),
+#NA,
+#data$quote_date > data$trip_start_date
+#)
+
+#viol_q <- data$quote_after_departure %in% TRUE
+
+# Cap START up to the quote_date where violated (leave quote_* unchanged)
+#if (any(viol_q, na.rm = TRUE)) {
+# optional audit flag
+#if (!"trip_start_capped_to_quote" %in% names(data)) {
+#data$trip_start_capped_to_quote <- FALSE
+#}
+#data$trip_start_capped_to_quote[viol_q] <- TRUE
+
+# perform the cap
+#data$trip_start_date[viol_q] <- data$quote_date[viol_q]
+#}
+
+# Recompute indicator after capping (should now be FALSE where it was capped)
+#data$quote_after_departure <- ifelse(
+#is.na(data$quote_date) | is.na(data$trip_start_date),
+#NA,
+#data$quote_date > data$trip_start_date
+#)
+
+
+## ========== Rule 2: departure (start) ≤ return (end); flag then cap ==========
+#data$trip_start_date_after_trip_end_date <- ifelse(
+#is.na(data$trip_start_date) | is.na(data$trip_end_date),
+#NA,
+#data$trip_start_date > data$trip_end_date
+#3)
+
+#viol_se_cap <- !is.na(data$trip_start_date) & !is.na(data$trip_end_date) &
+#(data$trip_start_date > data$trip_end_date)
+
+#if (any(viol_se_cap, na.rm = TRUE)) {
+#data$trip_start_date[viol_se_cap] <- data$trip_end_date[viol_se_cap]
+#}
+
+# ===== Rule 3: each boost_i window must lie within [trip_start, trip_end] =====
+clamp_boost_window <- function(df, i, trip_start = "trip_start_date", trip_end = "trip_end_date",
+                               keep_raw = TRUE) {
+  s_col <- paste0("boost_", i, "_start_date")
+  e_col <- paste0("boost_", i, "_end_date")
+  if (!all(c(s_col, e_col) %in% names(df))) return(df)
+  
+  # Coerce
+  s <- as_date_robust(df[[s_col]])
+  e <- as_date_robust(df[[e_col]])
+  t0 <- df[[trip_start]]
+  t1 <- df[[trip_end]]
+  
+  # Keep originals once
+  if (keep_raw) {
+    sr <- paste0(s_col, "_raw"); if (!sr %in% names(df)) df[[sr]] <- s
+    er <- paste0(e_col, "_raw"); if (!er %in% names(df)) df[[er]] <- e
+  }
+  
+  # Flags
+  df[[paste0(s_col, "_before_trip_start")]] <- ifelse(!is.na(s) & !is.na(t0), s < t0, NA)
+  df[[paste0(e_col, "_after_trip_end")]]    <- ifelse(!is.na(e) & !is.na(t1), e > t1, NA)
+  df[[paste0("boost_", i, "_start_after_end")]] <- ifelse(!is.na(s) & !is.na(e), s > e, NA)
+  
+  # Clamp into [t0, t1] (NA safe via ifelse)
+  s <- ifelse(!is.na(s) & !is.na(t0) & s < t0, t0, s)
+  e <- ifelse(!is.na(e) & !is.na(t1) & e > t1, t1, e)
+  
+  # Ensure start ≤ end post clamp
+  need_fix <- !is.na(s) & !is.na(e) & s > e
+  s[need_fix] <- e[need_fix]
+  
+  df[[s_col]] <- s
+  df[[e_col]] <- e
+  df
+}
+
+for (i in 1:8) data <- clamp_boost_window(data, i)
+
+# coerce any numeric “dates” back to Date
+fix_date_class <- function(x) {
+  if (inherits(x, "Date")) return(x)
+  if (is.numeric(x))       return(as.Date(x, origin = "1970-01-01"))  # restore Date
+  as_date_robust(x)
+}
+
+date_cols_all <- grep("(_date$|_date_raw$)", names(data), value = TRUE, ignore.case = TRUE)
+
+data <- data %>%
+  dplyr::mutate(across(all_of(date_cols_all), fix_date_class))
+
+# One Day Trip Indicator -> TRUE if start == end, else FALSE (NAs become FALSE)
+data <- data %>%
+  dplyr::mutate(one_day_trip = dplyr::coalesce(trip_start_date == trip_end_date, FALSE))
+
+# ==================== Troubleshoot/diagnostics; how many were capped per rule ====================
+# --- Count swap attempts vs successes ---
+
+# Attempt conditions (from earlier logic)
+attempt_start <- ddmm_swap_possible(data$trip_start_date_raw)
+attempt_end   <- ddmm_swap_possible(data$trip_end_date_raw)
+
+# Success flags (we stored these earlier)
+success_start <- data$trip_start_date_swapped_ddmm
+success_end   <- data$trip_end_date_swapped_ddmm
+
+# Summarise counts
+swap_summary <- tibble(
+  swap_type = c("Start Date", "End Date"),
+  attempted = c(sum(attempt_start, na.rm = TRUE),
+                sum(attempt_end,   na.rm = TRUE)),
+  successful = c(sum(success_start, na.rm = TRUE),
+                 sum(success_end,   na.rm = TRUE))
+) %>%
+  mutate(success_rate = if_else(attempted > 0, successful / attempted, NA_real_))
+
+print(swap_summary)
+
+# Rule 1: quote date > trip_start_date -> capped to trip_start_date
+#n_rule1 <- sum(viol_q, na.rm = TRUE)
+
+# Rule 2: trip_start_date > trip_end_date -> start set to end
+#n_rule2 <- sum(viol_se, na.rm = TRUE)
+
+# Rule 3: for each boost_i, count start capped, end capped, and start> end fixes
+r3_list <- lapply(1:8, function(i) {
+  s_col <- paste0("boost_", i, "_start_date")
+  e_col <- paste0("boost_", i, "_end_date")
+  sr    <- paste0(s_col, "_raw")
+  er    <- paste0(e_col, "_raw")
+  flag_s_before <- paste0(s_col, "_before_trip_start")
+  flag_e_after  <- paste0(e_col, "_after_trip_end")
+  flag_s_gt_e   <- paste0("boost_", i, "_start_after_end")
+  
+  # Skip if this boost pair doesn't exist
+  if (!all(c(s_col, e_col, sr, er, flag_s_before, flag_e_after, flag_s_gt_e) %in% names(data))) {
+    return(NULL)
+  }
+  
+  # Start capped: changed AND original was before trip start
+  n_start_capped <- sum(
+    !is.na(data[[sr]]) & !is.na(data[[s_col]]) &
+      data[[sr]] != data[[s_col]] &
+      (data[[flag_s_before]] %in% TRUE),
+    na.rm = TRUE
+  )
+  
+  # End capped: changed AND original was after trip end
+  n_end_capped <- sum(
+    !is.na(data[[er]]) & !is.na(data[[e_col]]) &
+      data[[er]] != data[[e_col]] &
+      (data[[flag_e_after]] %in% TRUE),
+    na.rm = TRUE
+  )
+  
+  # Start > End fixes
+  n_start_after_end_fixed <- sum(data[[flag_s_gt_e]] %in% TRUE, na.rm = TRUE)
+  
+  tibble(
+    boost = i,
+    start_capped = n_start_capped,
+    end_capped = n_end_capped,
+    start_after_end_fixed = n_start_after_end_fixed
+  )
+})
+
+r3 <- bind_rows(r3_list)
+
+# High-level summary
+summary_tbl <- bind_rows(
+  #tibble(rule = "Rule 1: quote date capped to trip_start", count = n_rule1),
+  #tibble(rule = "Rule 2: trip_start capped to trip_end", count = n_rule2),
+  tibble(rule = "Rule 3: boost windows clamped (total start)", count = sum(r3$start_capped, na.rm = TRUE)),
+  tibble(rule = "Rule 3: boost windows clamped (total end)",   count = sum(r3$end_capped,   na.rm = TRUE))
+  # tibble(rule = "Rule 3: start > end fixed",                   count = sum(r3$start_after_end_fixed, na.rm = TRUE))
+)
+
+print(summary_tbl)
+
+if (nrow(r3)) {
+  message("Per-boost breakdown:")
+  print(r3)
+}
+
+# --- Audit: case (1) and case (3) ---
+audit_equal <- data %>%
+  mutate(
+    all_three_equal = !is.na(quote_date) & !is.na(trip_start_date) & !is.na(trip_end_date) &
+      quote_date == trip_start_date & quote_date == trip_end_date,
+    start_eq_end    = !is.na(trip_start_date) & !is.na(trip_end_date) &
+      trip_start_date == trip_end_date,
+    start_eq_end_only = start_eq_end & !all_three_equal
+  )
+
+# Counts per Year–Month from quote_date
+monthly_counts <- data %>%
+  filter(!is.na(quote_date)) %>%
+  mutate(quote_month = floor_date(quote_date, unit = "month")) %>%
+  count(quote_month, name = "n") %>%
+  arrange(quote_month)
+
+monthly_counts
+
+# Overall count where start == end (both non-missing)
+same_day_idx <- with(data,
+                     !is.na(trip_start_date) & !is.na(trip_end_date) & trip_start_date == trip_end_date
+)
+cat("Rows with trip_start_date == trip_end_date:", sum(same_day_idx), "\n")
+
+# keep only needed columns
+data <- data %>%
+  dplyr::select(quote_id:quote_time)
+
+```
+
+## Destination Cleaning
+First reduce cardinality for destinations.
+```{r dest_clean, echo=FALSE, warning=FALSE, message=FALSE}
+# manually fix main cases
+df_long <- data %>%
+  separate_rows(destinations, sep = ";") %>%
+  mutate(destinations = str_trim(destinations)) %>%
+  mutate(destination_clean = str_to_lower(destinations) %>%
+           str_trim() %>%
+           str_replace("^usa$|^united states$|^america$|^all of north america$|^hawaii$", "united states") %>%
+           str_replace(".*\\buk\\b.*|.*united kingdom.*|.*england.*|.*scotland.*|.*wales.*", "united kingdom") %>%
+           str_replace("^all of europe$|^europe$", "europe_general") %>%
+           str_replace("^all of the pacific$|^pacific$", "oceania_general") %>%
+           str_replace("^all of africa$", "africa_general") %>%
+           str_replace("^south america$|^all of south america$", "south_america_general") %>%
+           str_replace("^all of asia$", "asia_general") %>%
+           str_replace("^bali$", "indonesia")) %>%
+  mutate(region = countrycode(destination_clean, "country.name", "region")) %>%
+  left_join(city_lookup, by = c("destination_clean" = "city_clean")) %>%
+  mutate(
+    # If region is NA but we matched a city and then use the city’s country
+    region = if_else(is.na(region) & !is.na(country_clean),
+                     countrycode(country_clean, "country.name", "region"),
+                     region)) %>%
+  mutate(region = case_when(
+    str_detect(destination_clean, "europe_general") ~ "Europe & Central Asia",
+    str_detect(destination_clean, "africa_general") ~ "Sub-Saharan Africa",
+    str_detect(destination_clean, "oceania_general") ~ "East Asia & Pacific",
+    str_detect(destination_clean, "asia_general") ~ "East Asia",
+    str_detect(destination_clean, "south_america_general") ~ "Latin America",
+    is.na(region) ~ "Other/Unknown",
+    TRUE ~ region),
+    
+    has_cruise = str_detect(str_to_lower(destinations),"\\bcruis\\w*\\b"),
+    is_worldwide = str_detect(str_to_lower(destinations),"\\bworld\\w*\\b"),
+    is_antarctica = str_detect(str_to_lower(destinations),"\\bantarctica\\w*\\b"),
+    is_australia = str_detect(str_to_lower(destinations),"\\baustralia\\w*\\b"),
+    
+    region_simple = case_when(
+      has_cruise ~ "cruise",
+      is_worldwide ~ "worldwide",
+      is_antarctica ~ "antarctica",
+      is_australia ~ "australia",
+      str_detect(region, "Europe") ~ "europe",
+      destination_clean %in% c("australia", "new zealand", "fiji", "samoa", "tonga", 
+                               "vanuatu", "papua new guinea", "solomon islands", 
+                               "cook islands", "tahiti", "french polynesia") ~ "oceania",
+      str_detect(region, "Asia") & str_detect(region, "East") ~ "east_asia",
+      str_detect(region, "Asia") & str_detect(region, "South") ~ "south_asia",
+      str_detect(region, "Middle East") ~ "middle_east",
+      str_detect(region, "Africa") ~ "africa",
+      str_detect(region, "America") & str_detect(region, "North") ~ "north_america",
+      str_detect(region, "America") & str_detect(region, "Latin") ~ "south_america",
+      region == "East Asia & Pacific" ~ "oceania",
+      TRUE ~ "other")) %>%
+  group_by(quote_id) %>%
+  summarise(
+    europe = as.numeric(any(region_simple == "europe")),
+    east_asia = as.numeric(any(region_simple == "east_asia")), 
+    south_asia = as.numeric(any(region_simple == "south_asia")),
+    middle_east = as.numeric(any(region_simple == "middle_east")),
+    africa = as.numeric(any(region_simple == "africa")),
+    north_america = as.numeric(any(region_simple == "north_america")),
+    south_america = as.numeric(any(region_simple == "south_america")),
+    oceania = as.numeric(any(region_simple == "oceania")),
+    other_region = as.numeric(any(region_simple == "other")),
+    cruise = as.numeric(any(has_cruise)),
+    worldwide = as.numeric(any(is_worldwide)),
+    antarctica = as.numeric(any(is_antarctica)),
+    domestic = as.numeric(any(is_australia)),
+    .groups = "drop")
+
+data <- data %>%
+  left_join(df_long, by = "quote_id") %>%
+  mutate(
+    is_all_americas = str_detect(str_to_lower(destinations), "all of the americas"),
+    north_america = if_else(is_all_americas, 1L, north_america),
+    south_america = if_else(is_all_americas, 1L, south_america),
+    other_region = if_else(is_all_americas, 0L, other_region)) %>%
+  dplyr::select(-is_all_americas)
+
+```
+
+## Age Cleaning
+```{r age_clean, echo=FALSE, warning=FALSE, message=FALSE}
+# create dummies for traveller demographics
+data <- data %>%
+  mutate(ages_list = map(strsplit(traveller_ages, ";"), as.numeric),
+         
+         # define categories with counts
+         children_count = map_dbl(ages_list, ~ sum(.x < 18)),
+         young_adult_count = map_dbl(ages_list, ~ sum(.x >= 18 & .x <= 40)),
+         middle_age_count = map_dbl(ages_list, ~ sum(.x >= 41 & .x <= 65)),
+         elderly_count = map_dbl(ages_list, ~ sum(.x >= 66)),
+         adult_count = map_dbl(ages_list, ~ sum(.x >= 18)),
+         number_travellers = map_dbl(ages_list, length),
+         
+         # Create dummy variables
+         solo = as.numeric(number_travellers == 1),
+         has_children = as.numeric(children_count > 0),
+         family = as.numeric(children_count > 0 & adult_count > 0),
+         couple = as.numeric(number_travellers == 2 & adult_count == 2),
+         any_young_adult = as.numeric(young_adult_count > 0),
+         any_middle_age = as.numeric(middle_age_count > 0),
+         any_elderly = as.numeric(elderly_count > 0)) %>%
+  dplyr::select(-ages_list, -ends_with("_count"))
+
+```
+
+# Merge External Data
+## Basic Feature Engineering
+Using only freely data...
+```{r freely_data_clean, echo=FALSE, warning=FALSE, message=FALSE}
+# english-speaking variable
+english_speaking <- c(
+  "^usa$|^united states$|^america$|^all of north america$|^hawaii$",
+  ".*\\buk\\b.*|.*united kingdom.*|.*england.*|.*scotland.*|.*wales.*",
+  "ireland", "canada", "australia", "new zealand", "south africa",
+  "singapore", "malta", "jamaica", "barbados", "bahamas",
+  "trinidad and tobago", "belize", "fiji", "guyana", "cook islands")
+
+english_speaking <- str_c(english_speaking, collapse = "|")
+
+data <- data %>%
+  mutate(
+    dest_list = str_split(str_to_lower(destinations), ";\\s*"),
+    english_pct = sapply(dest_list, function(x) {
+      mean(str_detect(x, english_speaking))})) %>%
+  dplyr::select(-dest_list)
+
+# pay-day dummy if quote date is close to pay day (1st or 15th of every month)
+data <- data %>%
+  mutate(
+    day = day(quote_date),
+    payday = if_else(day %in% c(1:4, 15:18), 1, 0)) %>%
+  dplyr::select(-day)
+
+data <- data %>%
+  mutate(
+    # price per traveller
+    price_per_traveller = quote_price / number_travellers,
+    # trip length
+    trip_length = as.numeric(trip_end_date - trip_start_date) + 1,
+    # quote creator age
+    quote_creator_age = as.numeric(sub(";.*", "", traveller_ages)),
+    # day of week
+    day_of_week = wday(quote_date, label = TRUE, abbr = TRUE),
+    # price per traveller per day
+    price_per_traveller_per_day = price_per_traveller / trip_length,
+    convert_flag = ifelse(convert == "YES", 1, 0),
+    no_boost = rowSums(!is.na(dplyr::select(., matches("^boost_\\d+_name$")))),
+    extra_cancellation = if_else(is.na(extra_cancellation)==1,
+                                 0,
+                                 extra_cancellation))
+
+# Quote creator time dummy variables
+data <- data %>%
+  mutate(quote_time = hms::as_hms(quote_time),
+         quote_hour = hour(quote_time))
+
+# Define time-of-day categories
+data <- data %>%
+  mutate(
+    early_morning = if_else(quote_hour >= 5 & quote_hour < 8, 1, 0),
+    morning       = if_else(quote_hour >= 8 & quote_hour < 12, 1, 0),
+    noon          = if_else(quote_hour >= 12 & quote_hour < 13, 1, 0),
+    afternoon     = if_else(quote_hour >= 13 & quote_hour < 17, 1, 0),
+    evening       = if_else(quote_hour >= 17 & quote_hour < 21, 1, 0),
+    night         = if_else(quote_hour >= 21 | quote_hour < 5, 1, 0))
+```
+
+### Travel Insurance Propensity Score
+```{r travel_ins_prop_score, echo=FALSE, warning=FALSE, message=FALSE}
+# clean boosts into dummy variables
+data_boosts <- data %>%
+  mutate(log_price = log1p(quote_price))
+date_cols <- grep("^boost_\\d+_(start|end)_date$", names(data_boosts), value = TRUE)
+data_boosts <- data_boosts %>%
+  mutate(across(all_of(date_cols), ~ as.Date(.)))
+
+boost_types <- c(
+  "Extra Cancellation",
+  "Specified Items",
+  "Gadget Cover",
+  "Existing Medical Condition",
+  "Adventure Activities",
+  "Snow Sports",
+  "Rental Vehicle Insurance Excess",
+  "Cruise Cover",
+  "Motorcycle Cover")
+
+# loop through each boost type and create dummy column
+for (b in boost_types) {
+  varname <- gsub("[ ()]", "_", b) 
+  data_boosts[[paste0("boost_", varname)]] <- apply(
+    dplyr::select(data, matches("^boost_\\d+_name$")),
+    1,
+    function(x) any(!is.na(x) & grepl(b, x, ignore.case = TRUE))
+  )
+}
+
+# Function computes total boost length per type
+compute_boost_days <- function(df, boost_type) {
+  apply(df, 1, function(row) {
+    total <- 0
+    for (i in 1:8) {
+      n <- row[[paste0("boost_", i, "_name")]]
+      s <- row[[paste0("boost_", i, "_start_date")]]
+      e <- row[[paste0("boost_", i, "_end_date")]]
+      
+      if (!is.na(n) && grepl(boost_type, n, ignore.case = TRUE) &&
+          !is.na(s) && !is.na(e)) {
+        s <- as.Date(s)
+        e <- as.Date(e)
+        if (!is.na(s) && !is.na(e)) {
+          total <- total + as.numeric(e - s) + 1
+        }
+      }
+    }
+    return(total)
+  })
+}
+
+# Add Relevant boosts based on model significasnce
+data_boosts <- data_boosts %>%
+  mutate(
+    boost_days_Adventure_Activities = compute_boost_days(., "Adventure Activities"),
+    boost_days_Snow_Sports = compute_boost_days(., "Snow Sports"),
+    boost_days_Rental_Vehicle_Insurance_Excess = compute_boost_days(., "Rental Vehicle Insurance Excess"),
+    boost_days_Cruise_Cover = compute_boost_days(., "Cruise Cover"),
+    boost_days_Motorcycle_Cover = compute_boost_days(., "Motorcycle Cover"))
+
+model_formula <- convert_flag ~ no_boost + log_price + trip_length +
+  boost_Extra_Cancellation * trip_length + log(extra_cancellation + 1) +
+  boost_Specified_Items + boost_Gadget_Cover + boost_Existing_Medical_Condition +
+  boost_Adventure_Activities + boost_days_Adventure_Activities +
+  boost_Snow_Sports + boost_days_Snow_Sports +
+  boost_Rental_Vehicle_Insurance_Excess + boost_days_Rental_Vehicle_Insurance_Excess +
+  boost_Cruise_Cover + boost_days_Cruise_Cover +
+  boost_Motorcycle_Cover + boost_days_Motorcycle_Cover
+
+model.boosts <- glm(model_formula, data = data_boosts, family = binomial())
+summary(model.boosts)
+
+data$boost_score <- predict(model.boosts, newdata = data_boosts, type = "response")
+
+# normalise prices and boost scores
+data <- data %>%
+  mutate(
+    norm_price = (quote_price - min(quote_price, na.rm = TRUE)) / 
+      (max(quote_price, na.rm = TRUE) - min(quote_price, na.rm = TRUE)),
+    norm_boost = (boost_score - min(boost_score, na.rm = TRUE)) / 
+      (max(boost_score, na.rm = TRUE) - min(boost_score, na.rm = TRUE)),
+    price_component  = 1 - norm_price,
+    coverage_component = norm_boost,
+    # Weighted average to compute traveller priority metric
+    priority_metric = 0.57 * price_component + 0.43 * coverage_component)
+```
+
+## Currency Data
+```{r merge_forex, echo=FALSE, warning=FALSE, message=FALSE}
+# currency to country map
+currency_map <- data.frame(
+  country = c(
+    "ALGERIA","Australia","Austria","Belgium","Botswana","Brazil",
+    "Brunei Darussalam","Canada","Chile","China","Cyprus","Czech Republic",
+    "Denmark","ESTONIA","European Monetary Union","Finland","France","Germany",
+    "Greece","India","Ireland","Israel","Italy","Japan",
+    "Korea","Kuwait","Luxembourg","Malaysia","Malta","Mauritius",
+    "Mexico","Netherlands,The","New Zealand","Norway","Oman","PERU","PHILIPPINES",
+    "Poland","Portugal","Qatar","SAN MARINO","Saudi Arabia","Singapore","Slovak Republic",
+    "Slovenia","Spain","Sweden","Switzerland","Thailand","Trinidad and Tobago",
+    "URUGUAY","United Arab Emirates","United Kingdom","United States"),
+  currency = c(
+    "DZD","AUD","EUR","EUR","BWP","BRL",
+    "BND","CAD","CLP","CNY","EUR","CZK",
+    "DKK","EUR","EUR","EUR","EUR","EUR",
+    "EUR","INR","EUR","ILS","EUR","JPY",
+    "KRW","KWD","EUR","MYR","EUR","MUR",
+    "MXN","EUR","NZD","NOK","OMR","PEN","PHP",
+    "PLN","EUR","QAR","EUR","SAR","SGD","EUR",
+    "EUR","EUR","SEK","CHF","THB","TTD",
+    "UYU","AED","GBP","USD"),
+  stringsAsFactors = FALSE)
+
+currency_map <- currency_map %>%
+  mutate(country_clean = str_to_lower(country))
+
+df_long <- data %>%
+  separate_rows(destinations, sep = ";") %>%
+  mutate(destinations = str_trim(destinations)) %>%
+  mutate(destination_clean = str_to_lower(destinations) %>%
+           str_trim() %>%
+           # --- Americas ---
+           str_replace("^usa$|^u\\.s\\.?a?$|^united states$|^america$|^all of north america$|^hawaii$", "united states") %>%
+           str_replace("^canada$", "canada") %>%
+           # --- UK and Europe ---
+           str_replace(".*\\buk\\b.*|.*united kingdom.*|.*england.*|.*scotland.*|.*wales.*|.*northern ireland.*", "united kingdom") %>%
+           str_replace("^the netherlands$|^netherlands,? the$", "netherlands") %>%
+           # --- Asia ---
+           str_replace("^bali$", "indonesia") %>%
+           str_replace("^south korea$|^republic of korea$", "korea") %>%
+           str_replace("^uae$|^united arab emirates$", "united arab emirates") %>%
+           # --- Oceania / Pacific ---
+           str_replace("^all of the pacific$|^pacific$", "australia") %>%
+           str_replace("^australia$", "australia") %>%
+           str_replace("^new zealand$", "new zealand") %>%
+           # --- Africa ---
+           str_replace("^south africa$", "south africa") %>%
+           # --- South America ---
+           str_replace("^south america$|^all of south america$", "south_america_general") %>%
+           # --- Clean up spaces ---
+           str_squish())
+
+get_major_currency <- function(dest_vector, currency_map, fallback = "USD") {
+  currencies <- currency_map$currency[match(dest_vector, currency_map$country_clean)]
+  currencies <- currencies[!is.na(currencies)]
+  if (length(currencies) == 0) return(fallback)
+  return(currencies[1])}
+
+df_long <- df_long %>%
+  rowwise() %>%
+  mutate(quote_currency = get_major_currency(destination_clean, currency_map)) %>%
+  ungroup()
+
+fx_long <- forex_data %>%
+  pivot_longer(
+    cols = -date,
+    names_to = "currency",
+    values_to = "rate") %>%
+  mutate(currency = toupper(str_sub(currency, -3, -1)))
+
+# create a 14 day moving volatility value based off quote_start_date
+fx_long <- fx_long %>%
+  mutate(date = as.Date(date)) %>%
+  arrange(currency, date) %>%
+  group_by(currency) %>%
+  complete(date = seq(min(date), max(date), by = "day")) %>%
+  fill(rate, .direction = "downup") %>%  
+  filter(!is.na(currency)) %>%
+  mutate(
+    pct_change_14 = (rate - lag(rate, 14)) / lag(rate, 14) * 100) %>%
+  ungroup()
+
+df_long <- df_long %>%
+  left_join(fx_long, by = c("quote_date" = "date", "quote_currency" = "currency")) %>%
+  group_by(quote_id) %>%
+  summarise(pct_change_14 = pct_change_14[which.max(abs(pct_change_14))])
+
+data <- data %>%
+  left_join(df_long, by = "quote_id")
+```
+
+## Temperature Data
+```{r merge_temp, echo=FALSE, warning=FALSE, message=FALSE}
+temp_data <- temp_data %>%
+  mutate(
+    Day = mdy(Day),
+    month = month(Day),
+    year = year(Day)) %>%
+  dplyr::select(Entity, year, month, Average.surface.temperature) 
+
+australia_temp <- temp_data %>%
+  filter(Entity == "Australia") %>%
+  rename(Australia_temp = Average.surface.temperature)
+
+data <- data %>%
+  mutate(
+    trip_month = month(trip_start_date),
+    trip_year  = year(trip_start_date)) %>%
+  separate_rows(destinations, sep = ";\\s*") %>%
+  mutate(destinations = str_trim(destinations)) %>%
+  left_join(
+    temp_data,
+    by = c("destinations" = "Entity", "trip_year" = "year", "trip_month" = "month")) %>%
+  left_join(australia_temp,
+            by = c("trip_year" = "year",
+                   "trip_month" = "month")) %>%
+  mutate(temp_diff = Average.surface.temperature - Australia_temp) %>%
+  group_by(quote_id) %>%
+  slice_max(order_by = abs(temp_diff), n = 1, with_ties = FALSE) %>%
+  summarise(max_temp_diff = first(temp_diff), .groups = "drop") %>%
+  left_join(data, by = "quote_id")
+```
+
+## Merge Google Trend Data
+```{r merge_gtrends, echo=FALSE, warning=FALSE, message=FALSE}
+data <- data %>%
+  dplyr::mutate(quote_date = as.Date(quote_date)) 
+
+data <- data %>%
+  dplyr::left_join(gt_travel_insurance_daily, by = c("quote_date" = "date"))
+```
+
+## ABS Trend Data
+```{r merge_abs_trends, echo=FALSE, warning=FALSE, message=FALSE}
+data <- data %>%
+  dplyr::left_join(
+    abs_by_age %>% dplyr::select(age, abs_total_by_age = total, abs_age_share),
+    by = c("quote_creator_age" = "age")
+  )
+```
+
+## School and Public Holidays
+```{r school_hols, echo=FALSE, warning=FALSE, message=FALSE}
+data <- data %>%
+  mutate(
+    # ---- Based on when people BOOKED (quote_date) ----
+    holiday_quote = case_when(
+      is.na(quote_date) ~ NA_character_,
+      quote_date >= as.Date("2024-09-21") & quote_date <= as.Date("2024-10-13") ~ "Spring",
+      quote_date >= as.Date("2024-12-07") & quote_date <= as.Date("2024-12-31") ~ "Summer",
+      TRUE ~ "Non-Holiday"
+    ),
+    
+    # ---- Based on when people TRAVELLED (trip_start_date) ----
+    holiday_trip = case_when(
+      is.na(trip_start_date) ~ NA_character_,
+      trip_start_date >= as.Date("2024-09-21") & trip_start_date <= as.Date("2024-10-13") ~ "Spring",
+      trip_start_date >= as.Date("2024-12-14") & trip_start_date <= as.Date("2024-12-31") ~ "Summer",
+      TRUE ~ "Non-Holiday"))
+
+```
+
+## Travel Readiness Index
+```{r tri, echo=FALSE, warning=FALSE, message=FALSE}
+# Affordability (higher = cheaper for Aussies). Log then scale to tame extremes.
+norm01 <- function(x, higher_is_better = TRUE) {
+  if (all(is.na(x))) return(x)
+  rng <- range(x, na.rm = TRUE)
+  if (diff(rng) == 0) return(rep(0.5, length(x)))  
+  out <- (x - rng[1]) / (rng[2] - rng[1])
+  if (!higher_is_better) out <- 1 - out
+  out}
+
+ppp <- ppp %>%
+  mutate(
+    aff_log = log(pp_rel_to_aus),
+    aff01   = norm01(aff_log, higher_is_better = TRUE))
+
+
+# ABS Age scaling
+data <- data %>%
+  mutate(
+    desire_raw   = abs_age_share,                  
+    desire_boost = sqrt(pmax(desire_raw, 1e-6)),   
+    desire01     = rescale(desire_boost, to = c(0, 1)))
+
+# Global Peace index (lower = safer) ----
+peace_index <- peace_index %>%
+  clean_names() %>%
+  rename(gpi_score = score) %>%
+  mutate(
+    country   = str_trim(country),
+    gpi_score = as.numeric(gsub(",", "", gpi_score)),
+    gpi01     = norm01(gpi_score, higher_is_better = FALSE) )
+
+safe_mean <- function(x) if (all(is.na(x))) NA_real_ else mean(x, na.rm = TRUE)
+safe_min  <- function(x) if (all(is.na(x))) NA_real_ else min(x,  na.rm = TRUE)
+safe_max  <- function(x) if (all(is.na(x))) NA_real_ else max(x,  na.rm = TRUE)
+
+# ensure quote_id exists
+if (!"quote_id" %in% names(data)) {
+  data <- data %>% mutate(quote_id = dplyr::row_number())}
+
+data_expanded <- data %>%
+  mutate(dest_list_raw = strsplit(destinations, "\\s*;\\s*|\\s*,\\s*")) %>%
+  tidyr::unnest_longer(dest_list_raw, values_to = "destination_raw") %>%
+  mutate(destination_raw = str_trim(destination_raw)) %>%
+  filter(destination_raw != "")
+
+map_tbl <- tibble(
+  destination_raw = c(
+    # existing
+    "Bali","Domestic Cruise","Honolulu","Hawaii","England","Scotland",
+    "Cook Islands","Kathmandu","All of Europe","All of Africa",
+    "United States","USA","UK",
+    # new 
+    "Fiji","American Samoa","Osaka","America","Brussels","All of the Middle East",
+    "Noumea","Vanuatu","Airlie Beach","Hong Kong SAR China","Tasmania",
+    "New Caledonia","Maldives","All of the Pacific","Czechia","Tokyo","Bangkok",
+    "Doha","All of North America","Macao SAR China","Worldwide","Adelaide",
+    "All of Europe (Scandinavia)","South West Pacific Cruise","All of South America"),
+  country = c(
+    # existing
+    "Indonesia","Australia","United States","United States","United Kingdom","United Kingdom",
+    "Cook Islands","Nepal","United Kingdom","South Africa",
+    "United States","United States","United Kingdom",
+    # new (hard-coded)
+    "Fiji","Samoa","Japan","United States","Belgium","United Arab Emirates",
+    "New Caledonia","Vanuatu","Australia","Hong Kong","Australia",
+    "New Caledonia","Maldives","Fiji","Czechia","Japan","Thailand",
+    "Qatar","United States","Macau","Singapore","Australia",
+    "Sweden","Vanuatu","Chile"))
+
+data_expanded <- data_expanded %>%
+  left_join(map_tbl, by = "destination_raw") %>%
+  mutate(country_for_join = coalesce(
+    country,
+    countrycode(destination_raw, "country.name", "country.name"),
+    destination_raw)) %>%
+  # join GPI (with gpi01) and PPP (with aff01)
+  left_join(peace_index %>% dplyr::select(country, gpi_score, gpi01),
+            by = c("country_for_join" = "country")) %>%
+  left_join(ppp %>% dplyr::select(country, aff01),
+            by = c("country_for_join" = "country"))
+
+# check
+nrow(data_expanded)
+length(unique(data_expanded$quote_id))
+
+by_quote <- data_expanded %>%
+  group_by(quote_id) %>%
+  summarise(
+    gpi_mean01 = safe_mean(gpi01),
+    aff_mean01 = safe_mean(aff01),
+    desire01   = safe_mean(desire01), 
+    .groups = "drop") %>%
+  mutate(
+    TRI = 0.46 * desire01 + 0.24 * aff_mean01 + 0.30 * gpi_mean01)
+
+data <- data %>% left_join(by_quote, by = "quote_id")
+
+```
+
+## Generation Groups
+```{r merge_gen, echo=FALSE, warning=FALSE, message=FALSE}
+# Create the generation groups
+generation_label <- c("Gen Z (18-28)", "Millenials (29-44)", "Gen X (45-60)", "Boomers (61+)")
+
+# Takes the the first traveller's age of each quote and categorises quote into a generation group
+data <- data %>%
+  mutate(main_age = str_sub(traveller_ages, start = 1, end = 2),
+         main_age = as.numeric(main_age),
+         generation = cut(main_age,
+                          breaks = c(0, 28, 44, 60, Inf),
+                          labels = generation_label))
+
+pivot_travel_behaviour <- pivot_wider(travel_behaviour, names_from = Travel_Metric, values_from = Value) %>%
+  mutate(across(c(`Media: Facebook`, `Media: Instagram`, `Smartphone: Inspiration`), 
+                ~ as.numeric(gsub("%", "", .)) / 100)) %>%
+  mutate(Generation = generation_label) %>%
+  mutate(Influenced_by_Media = (`Media: Facebook` + `Media: Instagram`) / 2) %>%
+  rename(inspired_by_smartphone = `Smartphone: Inspiration`) %>%
+  dplyr::select(Generation, Influenced_by_Media, inspired_by_smartphone)
+
+data <- data %>%
+  left_join(pivot_travel_behaviour, by = c("generation" = "Generation"))
+
+```
+
+# Exploratory Data Analysis
+```{r eda, echo=FALSE, warning=FALSE, message=FALSE}
+# conversion rate vs. age vs. price per traveller
+data %>%
+  filter(price_per_traveller <= 1000) %>%
+  mutate(
+    convert = convert == "YES",
+    price_bin = cut(price_per_traveller, breaks = seq(0, 1000, 50), include.lowest = TRUE),
+    age_bin = cut(quote_creator_age, breaks = seq(18, 90, 5), include.lowest = TRUE)) %>%
+  group_by(price_bin, age_bin) %>%
+  summarise(
+    conv_rate = mean(convert, na.rm = TRUE),
+    quote_count = n(),
+    .groups = "drop") %>%
+  mutate(
+    price_mid = (as.numeric(sub("\\((.+),.*", "\\1", price_bin)) + 25),
+    age_mid = (as.numeric(sub("\\((.+),.*", "\\1", age_bin)) + 2.5)) %>%
+  plot_ly(
+    x = ~price_mid,
+    y = ~age_mid,
+    z = ~conv_rate,
+    type = "scatter3d",
+    mode = "markers",
+    marker = list(
+      size = ~pmin(quote_count / 10, 15),
+      color = ~quote_count,
+      colorscale = "Viridis",
+      showscale = TRUE,
+      opacity = 0.85,
+      colorbar = list(title = "Quote Volume")),
+    text = ~paste(
+      "Price:", round(price_mid),
+      "<br>Age:", round(age_mid),
+      "<br>Conv Rate:", scales::percent(conv_rate, 0.1),
+      "<br>Quotes:", quote_count),
+    hoverinfo = "text") %>%
+  layout(
+    title = "Conversion Rate by Price and Age",
+    scene = list(
+      xaxis = list(title = "Price per Traveller"),
+      yaxis = list(title = "Quote Creator Age"),
+      zaxis = list(title = "Conversion Rate")))
+
+# conversion rate vs. traveller type
+data %>%
+  mutate(convert_flag = if_else(convert == "YES", 1, 0)) %>%
+  dplyr::select(convert_flag, family, any_elderly, solo, couple, any_young_adult, any_middle_age) %>%
+  pivot_longer(
+    cols = -convert_flag,
+    names_to = "traveller_type",
+    values_to = "present") %>%
+  filter(present == 1) %>%
+  group_by(traveller_type) %>%
+  summarise(conv_rate = mean(convert_flag, na.rm = TRUE), .groups = "drop") %>%
+  arrange(desc(conv_rate)) %>%
+  mutate(traveller_type = factor(traveller_type, levels = traveller_type)) %>%
+  ggplot(aes(x = traveller_type, y = conv_rate)) +
+  geom_col(fill = "steelblue") +
+  geom_text(aes(label = percent(conv_rate, 0.1)), vjust = -0.5) +
+  scale_y_continuous(labels = percent, limits = c(0, 0.18)) +
+  labs(
+    title = "Conversion Rate by Traveller Type",
+    x = "Traveller Type",
+    y = "Conversion Rate"
+  ) +
+  theme_minimal()
+
+# conversion rate vs. forex volatility
+data %>%
+  mutate(
+    convert_flag = if_else(convert == "YES", 1, 0),
+    pct_change_bin = cut(pct_change_14, breaks = seq(-10, 10, by = 2))) %>%
+  filter(!is.na(pct_change_14)) %>%
+  group_by(pct_change_bin) %>%
+  summarise(
+    conv_rate = mean(convert_flag, na.rm = TRUE),
+    n = n(),
+    .groups = "drop") %>%
+  mutate(bin_mid = (as.numeric(sub("\\((.+),.*", "\\1", pct_change_bin)) +
+                      as.numeric(sub("[^,]*,([^]]*)\\]", "\\1", pct_change_bin))) / 2) %>%
+  ggplot(aes(x = bin_mid, y = conv_rate)) +
+  geom_col(aes(y = n / max(n) * max(conv_rate)), fill = "grey90", alpha = 0.5) +
+  geom_line(color = "darkblue", size = 1.2) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(
+    title = "Conversion Rate vs. Exchange Rate Change (14-day moving average of AUD against destination currency)",
+    subtitle = "Shaded bars show relative sample size per % change bin",
+    x = "14-day AUD % Change",
+    y = "Conversion Rate") +
+  theme_minimal()
+
+model <- glm(convert_flag ~ pct_change_14 + quote_price + discount + platform + extra_cancellation,
+             data = data, family = binomial)
+
+summary(model)
+exp(coef(model))
+
+# priority metric
+data %>%
+  filter(no_boost > 0) %>%
+  dplyr::select(convert_flag, priority_metric) %>%
+  cor()
+
+ggplot(data %>%
+         filter(no_boost > 0),
+       aes(x = factor(convert_flag),
+           y = priority_metric,
+           fill = factor(convert_flag))) +
+  geom_boxplot(alpha = 0.7, width = 0.5) +
+  scale_fill_manual(values = c("#ff9999", "#66b266"), 
+                    name = "Converted", 
+                    labels = c("No", "Yes")) +
+  labs(
+    title = "Propensity Score by Conversion Outcome",
+    subtitle = "Quotes with boost(s) selected",
+    x = "Conversion",
+    y = "Propensity Score") +
+  theme_minimal()
+
+# Raw conversions vs. google trends
+df_daily <- data %>%
+  mutate(convert_flag = as.integer(convert == "YES")) %>%
+  group_by(quote_date) %>%
+  summarise(
+    conversions = sum(convert_flag, na.rm = TRUE),
+    gtrend      = mean(gtrend_travel_ins, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(quote_date) %>%
+  mutate(week = floor_date(quote_date, "week", week_start = 7)) %>%
+  group_by(week) %>%
+  mutate(conversions_weekly_avg = mean(conversions, na.rm = TRUE)) %>%
+  ungroup()
+
+
+ggplot(df_daily, aes(x = quote_date)) +
+  geom_line(aes(y = conversions_weekly_avg, color = "Number of Conversions"), linewidth = 1.1) +
+  geom_line(aes(y = gtrend,                color = "Google Trends (Index)"),    linewidth = 1.0) +
+  coord_cartesian(ylim = c(0, 250)) +
+  scale_y_continuous(
+    name = "Weekly Avg Number of Conversions",
+    sec.axis = sec_axis(~ ., name = "Google Trends Index")
+  ) +
+  labs(
+    title = "Weekly-Average Conversions vs Google Search Interest (Travel Insurance)",
+    x = "Date", color = NULL
+  ) +
+  scale_color_manual(values = c("Number of Conversions" = "steelblue",
+                                "Google Trends (Index)"    = "darkorange")) +
+  theme_minimal() +
+  theme(
+    legend.position = c(0.98, 0.98),
+    legend.justification = c(1, 1),
+    legend.background = element_rect(
+      fill = scales::alpha("white", 0.8),
+      colour = "grey80", linewidth = 0.3
+    )
+  )
+
+# ABS Age Data, conversion rate by age band
+### Freely: conversion rate by exact age
+freely_by_age <- data %>%
+  mutate(age = as.integer(quote_creator_age)) %>%
+  group_by(age) %>%
+  summarise(conv_rate = mean(convert == "YES"), .groups = "drop")
+
+### ABS: share by exact age
+abs_by_age_simple <- abs_by_age %>%
+  mutate(age = as.integer(age)) %>%
+  group_by(age) %>%
+  summarise(abs_age_share = mean(abs_age_share), .groups = "drop")
+
+### Join and filter to adult ages
+age_compare <- freely_by_age %>%
+  full_join(abs_by_age_simple, by = "age") %>%
+  arrange(age) %>%
+  filter(age >= 18, age <= 90)
+
+moving_avg <- function(x, k = 3) {
+  as.numeric(stats::filter(x, rep(1 / k, k), sides = 2))
+}
+
+age_compare <- age_compare %>%
+  mutate(
+    conv_rate_smooth = moving_avg(conv_rate, 3),
+    abs_share_smooth = moving_avg(abs_age_share, 3)
+  )
+
+ggplot(age_compare, aes(x = age)) +
+  geom_line(aes(y = conv_rate_smooth * 100, color = "Freely conversion rate"), linewidth = 1.1) +
+  geom_line(aes(y = abs_share_smooth * 100, color = "ABS travel share"), linewidth = 1.1) +
+  scale_y_continuous(labels = scales::percent_format(scale = 1)) +
+  labs(
+    title = "Freely Conversion Rate vs ABS Travel Share by Age",
+    x = "Age", y = "Percentage", color = NULL
+  ) +
+  theme_minimal() +
+  scale_color_manual(values = c("Freely conversion rate" = "steelblue",
+                                "ABS travel share" = "darkorange")) +
+  theme(
+    legend.position = c(0.98, 0.98),   # top-right inside
+    legend.justification = c(1, 1),
+    legend.background = element_rect(
+      fill = scales::alpha("white", 0.8),
+      colour = "grey80", linewidth = 0.3
+    )
+  )
+
+# School/public holiday
+###  Conversion rate by holiday period (quote date)
+data %>%
+  group_by(holiday_quote) %>%
+  summarise(
+    conv_rate = mean(convert == "YES", na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  ggplot(aes(x = holiday_quote, y = conv_rate, fill = holiday_quote)) +
+  geom_col(show.legend = FALSE) +
+  geom_text(aes(label = percent(conv_rate, accuracy = 0.1)), vjust = -0.5) +
+  scale_y_continuous(labels = percent_format()) +
+  labs(
+    title = "Conversion Rate by Booking Period (Quote Date)",
+    x = "Booking Period",
+    y = "Conversion Rate"
+  ) +
+  theme_minimal()
+
+### Conversion rate by travel period (trip start date)
+data %>%
+  group_by(holiday_trip) %>%
+  summarise(
+    conv_rate = mean(convert == "YES", na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  ggplot(aes(x = holiday_trip, y = conv_rate, fill = holiday_trip)) +
+  geom_col(show.legend = FALSE) +
+  geom_text(aes(label = percent(conv_rate, accuracy = 0.1)), vjust = -0.5) +
+  scale_y_continuous(labels = percent_format()) +
+  labs(
+    title = "Conversion Rate by Travel Period (Trip Start Date)",
+    x = "Travel Period",
+    y = "Conversion Rate"
+  ) +
+  theme_minimal()
+
+### Volume of quotes vs conversions during holidays
+data %>%
+  group_by(holiday_quote) %>%
+  summarise(
+    total_quotes = n(),
+    conversions  = sum(convert == "YES", na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  pivot_longer(
+    cols = c(total_quotes, conversions),
+    names_to = "type",
+    values_to = "count"
+  ) %>%
+  ggplot(aes(x = holiday_quote, y = count, fill = type)) +
+  geom_col(position = "dodge") +
+  labs(
+    title = "Quote and Conversion Volumes by Booking Period",
+    x = "Booking Period",
+    y = "Count",
+    fill = ""
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = c(0.98, 0.98),       
+    legend.justification = c(1, 1),
+    legend.background = element_rect(
+      fill = scales::alpha("white", 0.8),
+      colour = "grey80", linewidth = 0.3
+    )
+  )
+
+### share
+data %>%
+  group_by(holiday_quote) %>%
+  summarise(
+    total_quotes = n(),
+    conversions  = sum(convert == "YES", na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    pct_quotes = 100 * total_quotes / sum(total_quotes),
+    pct_conversions = 100 * conversions / sum(conversions)
+  )
+
+### Conversion rate vs GPI mean
+data %>%
+  filter(!is.na(gpi_mean01)) %>%
+  mutate(convert_flag = if_else(convert == "YES", 1, 0)) %>%
+  mutate(gpi_bin = cut(gpi_mean01,
+                       breaks = seq(1, 3, by = 0.25),
+                       include.lowest = TRUE)) %>%
+  group_by(gpi_bin) %>%
+  summarise(conv_rate = mean(convert_flag, na.rm = TRUE),
+            n = n()) %>%
+  ggplot(aes(x = gpi_bin, y = conv_rate)) +
+  geom_col(fill = "steelblue") +
+  geom_text(aes(label = scales::percent(conv_rate, accuracy = 0.1)),
+            vjust = -0.5, size = 3) +
+  labs(
+    title = "Conversion Rate by Destination Safety (GPI Mean)",
+    x = "Average GPI Score (lower = safer)", y = "Conversion Rate"
+  ) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  theme_minimal()
+
+### Density Plot
+ggplot(data, aes(x = gpi_mean01)) +
+  geom_density(fill = "orange", alpha = 0.5) +
+  labs(
+    title = "Distribution of Destination Safety Levels (GPI Mean)",
+    x = "Average GPI Score (lower = safer)", y = "Density"
+  ) +
+  theme_minimal()
+
+# TRI (feature engineered)
+data %>%
+  filter(!is.na(TRI), !is.na(convert)) %>%              
+  mutate(TRI_bin = cut(TRI, breaks = seq(0, 1, 0.1), include.lowest = TRUE)) %>%
+  group_by(TRI_bin) %>%
+  summarise(conv_rate = mean(convert == "YES", na.rm = TRUE)) %>%
+  ggplot(aes(x = TRI_bin, y = conv_rate)) +
+  geom_col(fill = "skyblue") +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  labs(
+    title = "Average Conversion Rate by TRI Decile",
+    x = "TRI decile",
+    y = "Conversion rate"
+  ) +
+  theme_minimal()
+```
+
+# Models
+## Pre-Processing
+```{r pre_model, echo=FALSE, warning=FALSE, message=FALSE}
+data_pre <- data
+
+# remove missing values and One-hot encode
+model_data <- data %>%
+  dplyr::select(-destinations, -trip_start_date, -trip_end_date, -traveller_ages,
+                -starts_with("boost_"),
+                -quote_date, -quote_time, -convert, -boost_score, -norm_price, -norm_boost,
+                -price_component, -coverage_component,
+                -desire_boost, -desire_raw, -desire01.y, -desire01.x,
+                -gpi_mean01, -aff_mean01) %>%
+  mutate(max_temp_diff = if_else(is.na(max_temp_diff) == 1, 0, max_temp_diff),
+         TRI = if_else(is.na(TRI) == 1, 0.642, TRI))
+
+model_data_boosts <- data_boosts %>%
+  select(1, (ncol(.) - 13):ncol(.))
+
+model_data <- model_data %>%
+  left_join(model_data_boosts,
+            by = "quote_id") %>%
+  dummy_cols(
+    select_columns = c("platform", "day_of_week", "holiday_quote", "holiday_trip", "generation"),
+    remove_first_dummy = TRUE,
+    remove_selected_columns = TRUE)
+
+for(col in names(model_data)) {
+  if(is.logical(model_data[[col]])) {
+    model_data[[col]] <- as.numeric(model_data[[col]])
+  }
+  if(is.logical(model_data[[col]])) {
+    model_data[[col]] <- as.numeric(model_data[[col]])
+  }
+}
+
+data_pre <- model_data %>%
+  left_join(data_pre %>% select(destinations, quote_date, quote_id),
+            by = "quote_id") %>%
+  select(-quote_id)
+model_data <- model_data %>%
+  select(-quote_id)
+
+model_data_boosts <- model_data %>%
+  dplyr::select(convert_flag, all_of(intersect(colnames(model_data_boosts), colnames(model_data))))
+```
+
+## Conversion Rate Models
+### GLM
+```{r glm, echo=FALSE, warning=FALSE, message=FALSE}
+# Data Prep ----
+# binary_vars <- c(
+#   "europe","east_asia","south_asia","middle_east",
+#   "africa","north_america","south_america","oceania","other_region","cruise",
+#   "worldwide","antarctica","domestic","solo","has_children","family","couple",
+#   "any_young_adult","any_middle_age","any_elderly", "payday",
+#   "early_morning", "morning", "noon", "afternoon", "evening", "night",
+#   "boost_Extra_Cancellation", "boost_Specified_Items", "boost_Gadget_Cover",
+#   "boost_Existing_Medical_Condition", "boost_Adventure_Activities",
+#   "boost_Snow_Sports", "boost_Rental_Vehicle_Insurance_Excess", "boost_Cruise_Cover",
+#   "boost_Motorcycle_Cover", "platform_web","platform_qw",
+#   "day_of_week_Mon","day_of_week_Tue","day_of_week_Wed",
+#   "day_of_week_Thu","day_of_week_Fri","day_of_week_Sat",
+#   "holiday_quote_Spring","holiday_quote_Summer",
+#   "holiday_trip_Spring","holiday_trip_Summer", "generation_Gen.X..45.60.",
+#   "generation_Gen.Z..18.28.","generation_Millenials..29.44."
+# )
+# 
+# data <- data %>%
+#   mutate(across(all_of(binary_vars), as.factor))
+
+data_model <- model_data
+sum(is.na(data_model))
+
+set.seed(123)
+
+# 70/30 split
+train_index <- sample(1:nrow(data_model), 0.7 * nrow(data_model))
+Data_train  <- data_model[train_index, ]
+Data_test   <- data_model[-train_index, ]
+
+x_train <- Data_train %>% select(-convert_flag)
+y_train <- Data_train$convert_flag
+
+x_test  <- Data_test %>% select(-convert_flag)
+y_test  <- Data_test$convert_flag
+
+x_train_matrix <- model.matrix(~ ., data = x_train)
+x_test_matrix  <- model.matrix(~ ., data = x_test)
+
+y_train_matrix <- as.matrix(y_train)
+y_test_matrix  <- as.matrix(y_test)
+
+# Regularisation ----
+cl <- makeCluster(detectCores() - 1)
+registerDoParallel(cl)
+
+# Logistic regression (unpenalised)
+LogisticModel <- glm(convert_flag ~ ., data = Data_train, family = "binomial")
+
+# LASSO (alpha = 1)
+CV_lasso <- cv.glmnet(
+  x_train_matrix, y_train_matrix,
+  family = "binomial", type.measure = "auc",
+  alpha = 1, nfolds = 10, parallel = TRUE
+)
+
+# RIDGE (alpha = 0)
+CV_ridge <- cv.glmnet(
+  x_train_matrix, y_train_matrix,
+  family = "binomial", type.measure = "auc",
+  alpha = 0, nfolds = 10, parallel = TRUE
+)
+
+# Elastic Net (alpha = 0.5)
+CV_en <- cv.glmnet(
+  x_train_matrix, y_train_matrix,
+  family = "binomial", type.measure = "auc",
+  alpha = 0.5, nfolds = 10, parallel = TRUE
+)
+
+stopCluster(cl)
+
+# Prediction ----
+pred_logistic <- predict(LogisticModel, newdata = Data_test, type = "response")
+pred_lasso    <- predict(CV_lasso, s = CV_lasso$lambda.min, newx = x_test_matrix, type = "response")
+pred_ridge    <- predict(CV_ridge, s = CV_ridge$lambda.min, newx = x_test_matrix, type = "response")
+pred_en       <- predict(CV_en,    s = CV_en$lambda.min,    newx = x_test_matrix, type = "response")
+
+ROC_logistic <- roc.curve(scores.class0 = pred_logistic, weights.class0 = y_test, curve = TRUE)
+ROC_lasso    <- roc.curve(scores.class0 = pred_lasso,    weights.class0 = y_test, curve = TRUE)
+ROC_ridge    <- roc.curve(scores.class0 = pred_ridge,    weights.class0 = y_test, curve = TRUE)
+ROC_en       <- roc.curve(scores.class0 = pred_en,       weights.class0 = y_test, curve = TRUE)
+
+plot(ROC_lasso,    color = "brown",  main = "ROC curves", auc.main = FALSE, lwd = 2)
+plot(ROC_ridge,    color = "blue",   add = TRUE, lwd = 2)
+plot(ROC_en,       color = "red",    add = TRUE, lwd = 2)
+plot(ROC_logistic, color = "yellow", add = TRUE, lwd = 2)
+
+legend("bottomright",
+       legend = c("Lasso", "Ridge", "Elastic Net", "Simple Logistic"),
+       lwd = 3, col  = c("brown", "blue", "red", "yellow"))
+
+ROC_logistic$auc
+ROC_lasso$auc
+ROC_ridge$auc
+ROC_en$auc
+
+
+PredClass_logistic <- factor(as.integer(pred_logistic > 0.5), levels = c(0,1))
+PredClass_lasso    <- factor(as.integer(pred_lasso > 0.5),    levels = c(0,1))
+PredClass_ridge    <- factor(as.integer(pred_ridge > 0.5),    levels = c(0,1))
+PredClass_en       <- factor(as.integer(pred_en > 0.5),       levels = c(0,1))
+
+ConfuMatrix_logistic <- confusionMatrix(PredClass_logistic, factor(y_test), positive = "1")
+ConfuMatrix_lasso    <- confusionMatrix(PredClass_lasso,    factor(y_test), positive = "1")
+ConfuMatrix_ridge    <- confusionMatrix(PredClass_ridge,    factor(y_test), positive = "1")
+ConfuMatrix_en       <- confusionMatrix(PredClass_en,       factor(y_test), positive = "1")
+
+ConfuMatrix_logistic
+ConfuMatrix_lasso
+ConfuMatrix_ridge
+ConfuMatrix_en
+
+
+# UP-Sampling ----
+# 0) Check current imbalance
+table(Data_train$convert_flag)
+
+# 1) Up-sample the training set (caret)
+set.seed(123)
+Balanced_train <- upSample(
+  x = Data_train[, setdiff(names(Data_train), "convert_flag")],
+  y = factor(Data_train$convert_flag)   # caret wants a factor here
+)
+
+# caret returns the target as the last col named "Class" → rename back
+colnames(Balanced_train)[ncol(Balanced_train)] <- "convert_flag"
+# Keep convert_flag as 0/1 numeric
+Balanced_train$convert_flag <- as.numeric(as.character(Balanced_train$convert_flag))
+
+# Verify balance
+table(Balanced_train$convert_flag)
+
+# 2) Rebuild X matrix for glmnet on the balanced data
+x_train_bal <- Balanced_train[, setdiff(names(Balanced_train), "convert_flag")]
+y_train_bal <- Balanced_train$convert_flag
+
+x_train_bal_matrix <- model.matrix(~ ., data = x_train_bal)
+# (You already built these earlier for test)
+# x_test_matrix  <- model.matrix(~ ., data = x_test)
+# y_test         <- Data_test$convert_flag
+
+# 3) Refit models on Balanced_train
+cl <- makeCluster(detectCores() - 1); registerDoParallel(cl)
+
+# (a) Simple logistic on balanced data
+Logistic_bal <- glm(convert_flag ~ ., data = Balanced_train, family = "binomial")
+
+# (b) LASSO / RIDGE / EN with CV (AUC)
+CV_lasso_bal <- cv.glmnet(
+  x_train_bal_matrix, y_train_bal,
+  family = "binomial", type.measure = "auc",
+  alpha = 1, nfolds = 10, parallel = TRUE
+)
+
+CV_ridge_bal <- cv.glmnet(
+  x_train_bal_matrix, y_train_bal,
+  family = "binomial", type.measure = "auc",
+  alpha = 0, nfolds = 10, parallel = TRUE
+)
+
+CV_en_bal <- cv.glmnet(
+  x_train_bal_matrix, y_train_bal,
+  family = "binomial", type.measure = "auc",
+  alpha = 0.5, nfolds = 10, parallel = TRUE
+)
+
+stopCluster(cl)
+
+# 4) Predict on the ORIGINAL (unbalanced) test set
+pred_logistic_bal <- predict(Logistic_bal, newdata = Data_test, type = "response")
+pred_lasso_bal    <- predict(CV_lasso_bal, s = CV_lasso_bal$lambda.min, newx = x_test_matrix, type = "response")
+pred_ridge_bal    <- predict(CV_ridge_bal, s = CV_ridge_bal$lambda.min, newx = x_test_matrix, type = "response")
+pred_en_bal       <- predict(CV_en_bal,    s = CV_en_bal$lambda.min,    newx = x_test_matrix, type = "response")
+
+
+# 5) AUC (PRROC) + Confusion matrices @ 0.5
+ROC_logistic_bal <- PRROC::roc.curve(scores.class0 = pred_logistic_bal, weights.class0 = y_test, curve = TRUE)
+ROC_lasso_bal    <- PRROC::roc.curve(scores.class0 = pred_lasso_bal,    weights.class0 = y_test, curve = TRUE)
+ROC_ridge_bal    <- PRROC::roc.curve(scores.class0 = pred_ridge_bal,    weights.class0 = y_test, curve = TRUE)
+ROC_en_bal       <- PRROC::roc.curve(scores.class0 = pred_en_bal,       weights.class0 = y_test, curve = TRUE)
+
+ROC_logistic_bal$auc; ROC_lasso_bal$auc; ROC_ridge_bal$auc; ROC_en_bal$auc
+
+PredClass_logistic_bal <- factor(as.integer(pred_logistic_bal > 0.5), levels = c(0,1))
+PredClass_lasso_bal    <- factor(as.integer(pred_lasso_bal    > 0.5), levels = c(0,1))
+PredClass_ridge_bal    <- factor(as.integer(pred_ridge_bal    > 0.5), levels = c(0,1))
+PredClass_en_bal       <- factor(as.integer(pred_en_bal       > 0.5), levels = c(0,1))
+
+ConfuMatrix_logistic_bal <- confusionMatrix(PredClass_logistic_bal, factor(y_test), positive = "1")
+ConfuMatrix_lasso_bal    <- confusionMatrix(PredClass_lasso_bal,    factor(y_test), positive = "1")
+ConfuMatrix_ridge_bal    <- confusionMatrix(PredClass_ridge_bal,    factor(y_test), positive = "1")
+ConfuMatrix_en_bal       <- confusionMatrix(PredClass_en_bal,       factor(y_test), positive = "1")
+
+ConfuMatrix_lasso_bal  
+ConfuMatrix_logistic_bal
+ConfuMatrix_ridge_bal
+ConfuMatrix_en_bal
+
+# FUNCTION: Find optimal F1 threshold + metrics
+get_f1_metrics <- function(pred_probs, y_true, model_name = "Model") {
+
+  ths <- seq(0.05, 0.95, by = 0.01)
+
+  calc_f1 <- function(thresh, probs, y_true) {
+    preds <- as.integer(probs >= thresh)
+    TP <- sum(preds == 1 & y_true == 1)
+    FP <- sum(preds == 1 & y_true == 0)
+    FN <- sum(preds == 0 & y_true == 1)
+    precision <- ifelse(TP + FP == 0, 0, TP / (TP + FP))
+    recall    <- ifelse(TP + FN == 0, 0, TP / (TP + FN))
+    if (precision + recall == 0) return(0)
+    return(2 * precision * recall / (precision + recall))
+  }
+
+  f1s <- sapply(ths, calc_f1, probs = as.numeric(pred_probs), y_true = as.numeric(y_true))
+  best_thresh <- ths[which.max(f1s)]
+  best_f1 <- max(f1s)
+
+  preds_final <- factor(as.integer(pred_probs >= best_thresh), levels = c(0,1))
+  cm <- confusionMatrix(preds_final, factor(y_true), positive = "1")
+
+  metrics <- data.frame(
+    Model = model_name,
+    Threshold_F1 = best_thresh,
+    F1 = best_f1,
+    Sensitivity = cm$byClass["Sensitivity"],
+    Specificity = cm$byClass["Specificity"],
+    Precision = cm$byClass["Pos Pred Value"],
+    Balanced_Accuracy = cm$byClass["Balanced Accuracy"],
+    Accuracy = cm$overall["Accuracy"]
+  )
+
+  return(metrics)
+}
+
+# APPLY TO ALL BALANCED MODELS
+results_list <- list(
+  get_f1_metrics(pred_logistic_bal, y_test, "Logistic (Balanced)"),
+  get_f1_metrics(pred_lasso_bal,    y_test, "LASSO (Balanced)"),
+  get_f1_metrics(pred_ridge_bal,    y_test, "Ridge (Balanced)"),
+  get_f1_metrics(pred_en_bal,       y_test, "Elastic Net (Balanced)")
+)
+
+f1_summary <- do.call(rbind, results_list)
+f1_summary
+
+
+
+# 10 fold CV
+set.seed(123)
+n <- nrow(Balanced_train)
+Nfold <- 10
+folds10 <- split(sample(1:n, replace = F), 1:Nfold)
+AUC_10fold_logistic <- AUC_10fold_lasso <- AUC_10fold_ridge <- AUC_10fold_en <- numeric(Nfold)
+
+for (i in 1:Nfold) {
+  idx_test <- folds10[[i]]
+  Train_Data <- Balanced_train[-idx_test, ]
+  Test_Data  <- Balanced_train[ idx_test, ]
+
+  X_train <- model.matrix(convert_flag ~ ., data = Train_Data)
+  y_train <- as.matrix(Train_Data$convert_flag)
+  X_test  <- model.matrix(convert_flag ~ ., data = Test_Data)
+  y_test  <- as.matrix(Test_Data$convert_flag)
+
+  # --- Logistic ---
+  Log_fold <- glm(convert_flag ~ ., data = Train_Data, family = "binomial")
+  pred_logistic_cv10 <- as.numeric(predict(Log_fold, newdata = Test_Data, type = "response"))
+  AUC_10fold_logistic[i] <- PRROC::roc.curve(scores.class0 = pred_logistic_cv10, weights.class0 = y_test)$auc
+
+  # --- LASSO ---
+  CV_lasso_cv10 <- cv.glmnet(X_train, y_train, family = "binomial",
+                             type.measure = "auc", alpha = 1, nfolds = 10)
+  pred_lasso_cv10 <- as.numeric(predict(CV_lasso_cv10, s = CV_lasso_cv10$lambda.min, newx = X_test, type = "response"))
+  AUC_10fold_lasso[i] <- PRROC::roc.curve(scores.class0 = pred_lasso_cv10, weights.class0 = y_test)$auc
+
+  # --- RIDGE ---
+  CV_ridge_cv10 <- cv.glmnet(X_train, y_train, family = "binomial",
+                             type.measure = "auc", alpha = 0, nfolds = 10)
+  pred_ridge_cv10 <- as.numeric(predict(CV_ridge_cv10, s = CV_ridge_cv10$lambda.min, newx = X_test, type = "response"))
+  AUC_10fold_ridge[i] <- PRROC::roc.curve(scores.class0 = pred_ridge_cv10, weights.class0 = y_test)$auc
+
+  # --- Elastic Net ---
+  CV_en_cv10 <- cv.glmnet(X_train, y_train, family = "binomial",
+                          type.measure = "auc", alpha = 0.5, nfolds = 10)
+  pred_en_cv10 <- as.numeric(predict(CV_en_cv10, s = CV_en_cv10$lambda.min, newx = X_test, type = "response"))
+  AUC_10fold_en[i] <- PRROC::roc.curve(scores.class0 = pred_en_cv10, weights.class0 = y_test)$auc
+}
+
+CV10_results <- data.frame(
+  Model = c("Logistic","LASSO","Ridge","Elastic Net"),
+  Mean_AUC = c(mean(AUC_10fold_logistic), mean(AUC_10fold_lasso),
+               mean(AUC_10fold_ridge), mean(AUC_10fold_en)),
+  SD_AUC = c(sd(AUC_10fold_logistic), sd(AUC_10fold_lasso),
+             sd(AUC_10fold_ridge), sd(AUC_10fold_en))
+)
+CV10_results
+
+# 10 Fold bagging
+set.seed(123)
+NBoot <- 10
+boot_logistic <- boot_lasso <- boot_ridge <- boot_en <- numeric(NBoot)
+
+for (b in 1:NBoot) {
+  boot_idx <- sample(1:n, replace = TRUE)
+  oob_idx  <- setdiff(1:n, boot_idx)
+
+  Train_Data <- Balanced_train[ boot_idx, ]
+  Test_Data  <- Balanced_train[ oob_idx,  ]
+
+  X_train <- model.matrix(convert_flag ~ ., data = Train_Data)
+  y_train <- as.matrix(Train_Data$convert_flag)
+  X_test  <- model.matrix(convert_flag ~ ., data = Test_Data)
+  y_test  <- as.matrix(Test_Data$convert_flag)
+
+  # --- Logistic ---
+  Log_boot <- glm(convert_flag ~ ., data = Train_Data, family = "binomial")
+  pred_log_boot <- as.numeric(predict(Log_boot, newdata = Test_Data, type = "response"))
+  boot_logistic[b] <- PRROC::roc.curve(scores.class0 = pred_log_boot, weights.class0 = y_test)$auc
+
+  # --- LASSO ---
+  CV_lasso_boot <- cv.glmnet(X_train, y_train, family = "binomial",
+                             type.measure = "auc", alpha = 1, nfolds = 10)
+  pred_lasso_boot <- as.numeric(predict(CV_lasso_boot, s = CV_lasso_boot$lambda.min, newx = X_test, type = "response"))
+  boot_lasso[b] <- PRROC::roc.curve(scores.class0 = pred_lasso_boot, weights.class0 = y_test)$auc
+
+  # --- RIDGE ---
+  CV_ridge_boot <- cv.glmnet(X_train, y_train, family = "binomial",
+                             type.measure = "auc", alpha = 0, nfolds = 10)
+  pred_ridge_boot <- as.numeric(predict(CV_ridge_boot, s = CV_ridge_boot$lambda.min, newx = X_test, type = "response"))
+  boot_ridge[b] <- PRROC::roc.curve(scores.class0 = pred_ridge_boot, weights.class0 = y_test)$auc
+
+  # --- Elastic Net ---
+  CV_en_boot <- cv.glmnet(X_train, y_train, family = "binomial",
+                          type.measure = "auc", alpha = 0.5, nfolds = 10)
+  pred_en_boot <- as.numeric(predict(CV_en_boot, s = CV_en_boot$lambda.min, newx = X_test, type = "response"))
+  boot_en[b] <- PRROC::roc.curve(scores.class0 = pred_en_boot, weights.class0 = y_test)$auc
+}
+
+Boot_results <- data.frame(
+  Model = c("Logistic","LASSO","Ridge","Elastic Net"),
+  Mean_AUC = c(mean(boot_logistic), mean(boot_lasso),
+               mean(boot_ridge), mean(boot_en)),
+  SD_AUC = c(sd(boot_logistic), sd(boot_lasso),
+             sd(boot_ridge), sd(boot_en))
+)
+Boot_results
+
+All_results <- data.frame(
+  Model = c("Logistic","LASSO","Ridge","Elastic Net"),
+  Base_Holdout_AUC = c(ROC_logistic_bal$auc, ROC_lasso_bal$auc,
+                       ROC_ridge_bal$auc, ROC_en_bal$auc),
+  CV10_MeanAUC = CV10_results$Mean_AUC,
+  Boot_MeanAUC = Boot_results$Mean_AUC
+)
+
+All_results
+
+summary(Logistic_bal)
+exp(coef(Logistic_bal))
+
+# Plots for the logistic regression:
+imp <- broom::tidy(Logistic_bal) %>%
+  filter(!is.na(statistic), term != "(Intercept)") %>%
+  transmute(term, importance = abs(statistic)) %>%
+  arrange(desc(importance)) %>%
+  dplyr::slice(1:25) %>%
+  mutate(term = fct_reorder(term, importance))
+
+ggplot(imp, aes(importance, term)) +
+  geom_col() +
+  labs(title = "Variable importance (|z| from GLM)",
+       x = "|z value| (larger = stronger signal)", y = NULL) +
+  theme_minimal()
+
+# A plot for logisitc regression, newer with direction
+wanted <- c(
+  "platform_web1","platform_qw1","discount","boost_Extra_Cancellation1",
+  "boost_Existing_Medical_Condition1","quote_price","price_per_traveller_per_day",
+  "holiday_trip_Spring1","domestic1","boost_Gadget_Cover1","east_asia1",
+  "has_children1","boost_Snow_Sports1","cruise1","solo1","no_boost",
+  "priority_metric","middle_east1","boost_days_Snow_Sports","number_travellers",
+  "boost_days_Cruise_Cover","boost_Motorcycle_Cover1","day_of_week_Mon1",
+  "any_young_adult1","boost_days_Rental_Vehicle_Insurance_Excess"
+)
+
+wanted <- rev(wanted)
+
+df <- tidy(Logistic_bal) %>%
+  filter(term %in% wanted, !is.na(estimate)) %>%
+  mutate(
+    label = case_when(
+      term == "no_boost" ~ "No Boost",
+      TRUE ~ term %>% str_remove("1$") %>% str_replace_all("_"," ") %>% str_to_title()
+    ),
+    OR  = exp(estimate),
+    dir = if_else(estimate >= 0, "Higher odds", "Lower odds")
+  ) %>%
+  mutate(label = factor(label, levels = label[match(wanted, term)]))
+
+pad <- 0.15 * diff(range(df$estimate, na.rm = TRUE))
+
+ggplot(df, aes(x = estimate, y = label, fill = dir)) +
+  geom_col(width = 0.7, alpha = 0.95) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  geom_text(aes(label = paste0(round(OR, 2), "×"),
+                hjust = if_else(estimate >= 0, -0.1, 1.1)),
+            size = 3.4) +
+  scale_y_discrete(NULL) +
+  scale_x_continuous("Log-odds (ln odds ratio)") +
+  coord_cartesian(xlim = c(min(df$estimate, na.rm = TRUE) - pad,
+                           max(df$estimate, na.rm = TRUE) + pad)) +
+  labs(title = "Top Predictors: Effect on Conversion",
+       subtitle = "Bars: log-odds (right = increases). Labels: odds ratios (×).") +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom", panel.grid.minor = element_blank())
+
+# Bonus plot for Boost Predictors
+data1 <- data_pre
+
+# Tidy the model and keep only boost variables (handle any NAs from singularities)
+wanted <- c(
+  "boost_Extra_Cancellation1",
+  "boost_Specified_Items1",
+  "boost_Cruise_Cover1",
+  "boost_Rental_Vehicle_Insurance_Excess1",
+  "boost_Adventure_Activities1",
+  "no_boost",
+  "boost_Motorcycle_Cover1",
+  "boost_Snow_Sports1",
+  "boost_Gadget_Cover1",
+  "boost_Existing_Medical_Condition1"
+)
+
+df <- tidy(Logistic_bal) %>%
+  filter(term %in% wanted, !is.na(estimate)) %>%
+  mutate(
+    # nice labels
+    label = case_when(
+      term == "no_boost" ~ "No Boost",
+      TRUE ~ term %>%
+        str_remove("^boost_") %>% str_remove("1$") %>%
+        str_replace_all("_", " ") %>% str_to_title()
+    ),
+    OR  = exp(estimate),
+    dir = if_else(estimate >= 0, "Higher odds", "Lower odds")
+  ) %>%
+  # keep your manual order
+  mutate(label = factor(label, levels = label[match(wanted, term)]))
+
+pad <- 0.15 * diff(range(df$estimate))
+
+ggplot(df, aes(x = estimate, y = label, fill = dir)) +
+  geom_col(width = 0.7, alpha = 0.95) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  geom_text(aes(label = paste0(round(OR, 2), "×"),
+                hjust = if_else(estimate >= 0, -0.1, 1.1)),
+            size = 3.4) +
+  scale_fill_manual(values = c("Higher odds" = "#2c7fb8", "Lower odds" = "#f03b20"), name = NULL) +
+  scale_y_discrete(NULL) +
+  scale_x_continuous("Log-odds (ln odds ratio)") +
+  coord_cartesian(xlim = c(min(df$estimate) - pad, max(df$estimate) + pad)) +
+  labs(title = "Selected Boosts: Effect on Conversion",
+       subtitle = "Bars show log-odds (positive = increases odds). Labels show odds ratios (×).") +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom",
+        panel.grid.minor = element_blank())
+
+# Seasonality EDA for PART 2
+to_bin <- function(x) as.integer(as.character(x))  # factor "0"/"1" -> 0/1
+
+region_cols <- c(
+  "europe","east_asia","south_asia","middle_east","africa",
+  "north_america","south_america","oceania","other_region",
+  "worldwide","antarctica","domestic"
+)
+
+boost_cols <- c(
+  "boost_Extra_Cancellation",
+  "boost_Specified_Items",
+  "boost_Gadget_Cover",
+  "boost_Existing_Medical_Condition",
+  "boost_Adventure_Activities",
+  "boost_Snow_Sports",
+  "boost_Rental_Vehicle_Insurance_Excess",
+  "boost_Cruise_Cover",
+  "boost_Motorcycle_Cover"
+)
+
+# --- Prepare core fields ---
+df <- data1 %>%
+  mutate(
+    across(all_of(region_cols), to_bin),
+    across(all_of(boost_cols),  to_bin),
+    convert_flag = as.integer(convert_flag),
+    quote_date = as.Date(quote_date),
+    month = month(quote_date, label = TRUE, abbr = TRUE),
+
+    # collapse one-hot regions -> single label
+    num_regions = rowSums(across(all_of(region_cols))),
+    dest_region = case_when(
+      num_regions == 0 ~ "Unknown",
+      num_regions >  1 ~ "Multi-Region",
+      europe == 1 ~ "Europe",
+      east_asia == 1 ~ "East Asia",
+      south_asia == 1 ~ "South Asia",
+      middle_east == 1 ~ "Middle East",
+      africa == 1 ~ "Africa",
+      north_america == 1 ~ "North America",
+      south_america == 1 ~ "South America",
+      oceania == 1 ~ "Oceania",
+      other_region == 1 ~ "Other Region",
+      worldwide == 1 ~ "Worldwide",
+      antarctica == 1 ~ "Antarctica",
+      domestic == 1 ~ "Domestic",
+      TRUE ~ "Unknown"
+    )
+  )
+
+# ---------- 1) Boost selection rate by destination ----------
+boost_region_rate <- df %>%
+  pivot_longer(all_of(boost_cols), names_to = "boost", values_to = "has_boost") %>%
+  group_by(dest_region, boost) %>%
+  summarise(selection_rate = mean(has_boost, na.rm = TRUE), .groups = "drop") %>%
+  mutate(boost = boost %>% str_remove("^boost_") %>% str_replace_all("_", " ") %>% str_to_title())
+
+ggplot(boost_region_rate,
+       aes(x = fct_reorder(dest_region, selection_rate), y = selection_rate, fill = boost)) +
+  geom_col(position = "dodge") +
+  coord_flip() +
+  labs(title = "Boost selection rate by destination (Oct–Dec)",
+       x = "Destination region", y = "Selection rate", fill = "Boost") +
+  theme_minimal(base_size = 12)
+
+# ---------- 2) Conversion rate by destination × boost ----------
+boost_region_conv <- df %>%
+  pivot_longer(all_of(boost_cols), names_to = "boost", values_to = "has_boost") %>%
+  filter(has_boost == 1) %>%
+  group_by(dest_region, boost) %>%
+  summarise(conv_rate = mean(convert_flag == 1, na.rm = TRUE), .groups = "drop") %>%
+  mutate(boost = boost %>% str_remove("^boost_") %>% str_replace_all("_", " ") %>% str_to_title())
+
+ggplot(boost_region_conv,
+       aes(x = fct_reorder(dest_region, conv_rate), y = conv_rate * 100, fill = boost)) +
+  geom_col(position = "dodge") +
+  coord_flip() +
+  labs(title = "Conversion rate for boosted quotes by destination (Oct–Dec)",
+       x = "Destination region", y = "Conversion rate (%)", fill = "Boost") +
+  theme_minimal(base_size = 12)
+
+
+# Snow sports
+to_bin <- function(x) as.integer(as.character(x))
+
+df_snow <- data1 %>%
+  mutate(
+    boost_Snow_Sports = to_bin(boost_Snow_Sports),
+    convert_flag = as.integer(convert_flag),
+    east_asia = to_bin(east_asia),
+    north_america = to_bin(north_america),
+    europe = to_bin(europe),
+    quote_date = as.Date(quote_date, tryFormats = c("%Y-%m-%d", "%d/%m/%Y")),
+    dest_region = dplyr::case_when(
+      east_asia == 1 ~ "East Asia",
+      north_america == 1 ~ "North America",
+      europe == 1 ~ "Europe",
+      TRUE ~ "Other"
+    )
+  ) %>%
+  filter(dest_region %in% c("East Asia", "North America", "Europe"))
+
+snow_daily <- df_snow %>%
+  group_by(quote_date, dest_region) %>%
+  summarise(
+    selections = sum(boost_Snow_Sports, na.rm = TRUE),
+    conversion_rate = mean(convert_flag[boost_Snow_Sports == 1], na.rm = TRUE) * 100,
+    .groups = "drop"
+  )
+
+ggplot(snow_daily, aes(x = quote_date)) +
+  geom_line(aes(y = selections, color = "Number of Selections"), linewidth = 1.2) +
+  geom_line(aes(y = conversion_rate, color = "Conversion Rate (%)"), linewidth = 1.2) +  
+  facet_wrap(~dest_region, ncol = 1, scales = "free_y") +
+  scale_y_continuous(
+    name = "Number of Selections",
+    sec.axis = sec_axis(~ ., name = "Conversion Rate (%)")
+  ) +
+  scale_x_date(date_breaks = "1 week", date_labels = "%b %d") +
+  labs(
+    title = "Snow Sports Boost (Europe, East Asia, North America)",
+    subtitle = "Number of selections and conversion rate over time (Oct–Dec)",
+    x = "Quote creation date", color = ""
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom", axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+
+
+# factor "0"/"1" -> 0/1
+to_bin <- function(x) as.integer(as.character(x))
+
+# Generic plotting helper: one boost over time (Oct–Dec)
+plot_boost_timeseries <- function(df, boost_col, title_text) {
+  df2 <- df %>%
+    mutate(
+      !!boost_col := to_bin(.data[[boost_col]]),
+      convert_flag = as.integer(convert_flag),
+      quote_date = as.Date(quote_date, tryFormats = c("%Y-%m-%d", "%d/%m/%Y"))
+    )
+
+  daily <- df2 %>%
+    group_by(quote_date) %>%
+    summarise(
+      selections = sum(.data[[boost_col]], na.rm = TRUE),
+      conversion_rate = mean(convert_flag[.data[[boost_col]] == 1], na.rm = TRUE) * 100,
+      .groups = "drop"
+    )
+
+  ggplot(daily, aes(x = quote_date)) +
+    geom_line(aes(y = selections, color = "Number of Selections"), linewidth = 1.2) +
+    geom_line(aes(y = conversion_rate, color = "Conversion Rate (%)"), linewidth = 1.2) +  
+    scale_y_continuous(
+      name = "Number of Selections",
+      sec.axis = sec_axis(~ ., name = "Conversion Rate (%)")
+    ) +
+    scale_x_date(date_breaks = "1 week", date_labels = "%b %d") +
+    labs(
+      title = title_text,
+      subtitle = "Selections (count) vs Conversion rate (%) over time",
+      x = "Quote creation date",
+      color = ""
+    ) +
+    theme_minimal(base_size = 12) +
+    theme(legend.position = "bottom",
+          axis.text.x = element_text(angle = 45, hjust = 1))
+}
+
+# --- Run the three plots ---
+
+# 1) Cruise Cover
+plot_boost_timeseries(data1, "boost_Cruise_Cover", "Cruise Cover Boost (Oct–Dec)")
+
+# 2) Snow Sports (Ski)
+plot_boost_timeseries(data1, "boost_Snow_Sports", "Snow Sports Boost (Oct–Dec)")
+
+# 3) Adventure Activities
+plot_boost_timeseries(data1, "boost_Adventure_Activities", "Adventure Activities Boost (Oct–Dec)")
+```
+
+### XG-Boost
+Uncomment to complete hyperparameter tuning (eta approx. > 30 minutes). If the model already exists locally, then load it directly.
+```{r xgboost_model, echo=FALSE, warning=FALSE, message=FALSE}
+# Split data
+set.seed(2025)
+negative_count <- sum(model_data$convert_flag == 0)
+positive_count <- sum(model_data$convert_flag == 1)
+scale_pos_weight <- negative_count / positive_count
+
+# Split data into training and testing sets
+train_index <- createDataPartition(model_data$convert_flag, p = 0.8, list = FALSE)
+train_data <- model_data[train_index, ]
+test_data <- model_data[-train_index, ]
+
+# Separate features and target variable
+x_train <- as.matrix(train_data[, !names(train_data) %in% "convert_flag"])
+y_train <- train_data$convert_flag
+x_test <- as.matrix(test_data[, !names(test_data) %in% "convert_flag"])
+y_test <- test_data$convert_flag
+
+# Convert to xgboost DMatrix format (more efficient)
+dtrain <- xgb.DMatrix(data = x_train, label = y_train)
+dtest <- xgb.DMatrix(data = x_test, label = y_test)
+
+# Define the function to optimize
+xgb_bayesian <- function(eta, max_depth, min_child_weight, subsample, colsample_bytree, gamma, threshold) {
+  
+  params <- list(
+    objective = "binary:logistic",
+    eta = eta,
+    max_depth = as.integer(max_depth),
+    min_child_weight = min_child_weight,
+    subsample = subsample,
+    colsample_bytree = colsample_bytree,
+    gamma = gamma,
+    scale_pos_weight = scale_pos_weight,  
+    eval_metric = "logloss"
+  )
+  
+  # Train model with early stopping
+  set.seed(2025)
+  cv  <- xgb.cv(
+    params = params,
+    data = dtrain,
+    nrounds = 1500,
+    nfold = 3,  
+    early_stopping_rounds = 10,
+    verbose = 0
+  )
+  
+  best_iteration <- cv$best_iteration
+  
+  # Train final model with best number of rounds
+  model <- xgb.train(
+    params = params,
+    data = dtrain,
+    nrounds = best_iteration,
+    verbose = 0
+  )
+  
+  # Predict on test data
+  preds <- predict(model, dtest)
+  preds_class <- ifelse(preds > threshold, 1, 0)
+  
+  # Compute F1 Score
+  precision <- Precision(y_pred = preds_class, y_true = y_test)
+  recall <- Recall(y_pred = preds_class, y_true = y_test)
+  f1 <- ifelse((precision + recall) == 0, 0, 2 * precision * recall / (precision + recall))
+  
+  return(list(Score = f1, Pred = 0))
+}
+
+# Set parameter bounds
+bounds <- list(
+  eta = c(0.025, 0.05, 0.1, 0.3),
+  max_depth = c(2, 4, 6),
+  min_child_weight = c(1, 2, 3),
+  subsample = c(0.5, 0.75, 1.0),
+  colsample_bytree = c(0.4, 0.6, 0.8, 1.0),
+  gamma = c(0, 0.05, 0.1, 0.5, 0.7, 0.9, 1.0),
+  threshold = c(0.2, 0.3, 0.4, 0.5, 0.6)
+)
+
+# Run Bayesian optimisation (UNCOMMENT TO DO HYPERPARAMETER TUNING FROM SCRATCH)
+# bayesian_results <- BayesianOptimization(
+#   FUN = xgb_bayesian,
+#   bounds = bounds,
+#   init_points = 10,  
+#   n_iter = 20,       
+#   acq = "ucb",       
+#   verbose = TRUE)
+
+# Extract best parameters from Bayesian optimisation
+# best_params <- bayesian_results$Best_Par
+# final_params <- list(
+#   objective = "binary:logistic",
+#   eta = best_params["eta"],
+#   max_depth = as.integer(best_params["max_depth"]),
+#   min_child_weight = best_params["min_child_weight"],
+#   subsample = best_params["subsample"],
+#   colsample_bytree = best_params["colsample_bytree"],
+#   gamma = best_params["gamma"],
+#   scale_pos_weight = scale_pos_weight,
+#   eval_metric = "logloss")
+
+# parameter list (THIS WILL TRAIN THE MODEL WITH SELECTED HYPERPARAMETERS)
+final_params <- list(
+  objective = "binary:logistic",
+  eta = 0.05,
+  max_depth = 4,
+  min_child_weight = 1.542985,
+  subsample = 0.75,
+  colsample_bytree = 0.6,
+  gamma = 0.04985325,
+  scale_pos_weight = scale_pos_weight,
+  eval_metric = "logloss"
+)
+
+# UNCOMMENT IF MODEL IS ALREADY AVAILABLE LOCALLY
+# final_model <- xgb.load("conversions_full_xgboost_model.model")
+
+final_model <- xgb.train(
+  params = final_params,
+  data = dtrain,
+  nrounds = 1500,
+  verbose = 1,
+  watchlist = list(train = dtrain, test = dtest),
+  early_stopping_rounds = 50
+)
+
+# Make predictions on test set
+test_predictions <- predict(final_model, dtest)
+test_predictions_binary <- ifelse(test_predictions > 0.65, 1, 0)
+
+# Calculate comprehensive metrics
+conf_matrix <- confusionMatrix(as.factor(test_predictions_binary), as.factor(y_test))
+
+metrics <- list(
+  AUC = AUC(test_predictions, y_test),
+  Accuracy = conf_matrix$overall['Accuracy'],
+  Precision = Precision(y_test, test_predictions_binary, positive = 1),
+  Recall = Recall(y_test, test_predictions_binary, positive = 1),
+  F1_Score = F1_Score(y_test, test_predictions_binary, positive = 1),
+  Specificity = Specificity(y_test, test_predictions_binary, positive = 1)
+)
+
+# Print results
+cat("\n=== FINAL TEST SET PERFORMANCE ===\n")
+cat("\nPerformance Metrics:\n")
+print(metrics)
+cat("\nConfusion Matrix:\n")
+print(conf_matrix$table)
+
+# Calculate additional business metrics
+cat("\nAdditional Metrics:\n")
+cat("True Positives:", conf_matrix$table[2, 2], "\n")
+cat("False Positives:", conf_matrix$table[2, 1], "\n") 
+cat("True Negatives:", conf_matrix$table[1, 1], "\n")
+cat("False Negatives:", conf_matrix$table[1, 2], "\n")
+
+# ROC Curve
+roc_curve <- roc(y_test, test_predictions)
+par(mfrow = c(1, 1))
+plot(roc_curve, main = "ROC Curve - Test Set", col = "blue", lwd = 2)
+auc_value <- auc(roc_curve)
+cat("Test Set AUC:", auc_value, "\n")
+
+# Probability distribution by actual class
+par(mfrow = c(1, 2))
+hist(test_predictions[y_test == 1], main = "Probabilities - Converted", 
+     xlab = "Predicted Probability", col = "lightgreen", breaks = 20)
+hist(test_predictions[y_test == 0], main = "Probabilities - Not Converted", 
+     xlab = "Predicted Probability", col = "lightcoral", breaks = 20)
+
+# Get feature importance
+importance_matrix <- xgb.importance(
+  feature_names = colnames(x_train), 
+  model = final_model)
+
+print(importance_matrix[1:15, ])
+
+# Plot feature importance
+xgb.plot.importance(importance_matrix[1:15, ], 
+                    main = "Top 15 Feature Importance",
+                    xlab = 'Gain')
+
+# Compute SHAP values
+x_all <- as.matrix(model_data %>% dplyr::select(-convert_flag))
+shap_values=predict(final_model, x_all, predcontrib = TRUE, approxcontrib = F)
+shap_df <- as.data.frame(shap_values)
+shap_df$BIAS <- NULL  
+colnames(shap_df) <- colnames(x_all)
+shap_importance <- data.frame(
+  Feature = names(shap_df),
+  MeanAbsSHAP = apply(abs(shap_df), 2, mean))
+shap_importance <- shap_importance[order(shap_importance$MeanAbsSHAP, decreasing = TRUE), ]
+ggplot(shap_importance[1:20, ], aes(x = reorder(Feature, MeanAbsSHAP), y = MeanAbsSHAP)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Mean Absolute SHAP Values (Top 20 Features)",
+       x = "Feature", y = "Mean |SHAP|")
+shap_long <- shap.prep(
+  xgb_model = final_model,
+  X_train = x_all)
+top_features <- shap_long %>%
+  group_by(variable) %>%
+  summarise(mean_abs_shap = mean(abs(value))) %>%
+  arrange(desc(mean_abs_shap)) %>%
+  slice_head(n = 20) %>%
+  pull(variable)
+shap_top20 <- shap_long %>%
+  filter(variable %in% top_features) %>%
+  droplevels()
+p <- shap.plot.summary(shap_top20)
+ggsave("shap_summary.png", plot = p, width = 10, height = 8, dpi = 300)
+
+# partial dependency plot
+final_model$params <- list(objective = "binary:logistic")
+pdp_lstat <- partial(
+  object = final_model,
+  pred.var = "max_temp_diff",
+  train = as.data.frame(subset(model_data, select = -convert_flag))
+)
+plotPartial(pdp_lstat)
+```
+
+# Boost Models
+## Boost Analysis
+```{r boost_eda, echo=FALSE, warning=FALSE, message=FALSE}
+df <- model_data
+N <- nrow(df)
+
+# ---- 2) Declare the boost columns of interest & keep those present ----
+requested_boosts <- c(
+  "boost_Extra_Cancellation",
+  "boost_Specified_Items",
+  "boost_Gadget_Cover",
+  "boost_Existing_Medical_Condition",
+  "boost_Adventure_Activities",
+  "boost_Snow_Sports",
+  "boost_Rental_Vehicle_Insurance_Excess",
+  "boost_Cruise_Cover",
+  "boost_Motorcycle_Cover"
+)
+
+present_boosts <- intersect(requested_boosts, names(df))
+if (length(present_boosts) == 0L) {
+  stop("None of the requested boost_ columns are present in the data.")
+}
+
+#
+# ---- 3) Coerce boost columns to 0/1 integers & make any_boost ----
+to_binary <- function(x) {
+  if (is.logical(x)) return(as.integer(x))
+  if (is.numeric(x)) return(ifelse(is.na(x), 0L, as.integer(x != 0)))
+  xl <- tolower(as.character(x))
+  m1 <- xl %in% c("1","y","yes","true","t")
+  m0 <- xl %in% c("0","n","no","false","f")
+  out <- ifelse(m1, 1L, ifelse(m0, 0L, NA_integer_))
+  out[is.na(out)] <- 0L
+  as.integer(out)
+}
+df <- df %>%
+  mutate(across(all_of(present_boosts), to_binary)) %>%
+  mutate(any_boost = as.integer(rowSums(across(all_of(present_boosts))) > 0))
+
+# ---- 4) Overall take-up for each boost ----
+overall_df <- map_dfr(c("any_boost", present_boosts), function(col) {
+  tibble(
+    boost = col,
+    n_quotes = N,
+    n_selected = sum(df[[col]] == 1, na.rm = TRUE),
+    take_up_rate = mean(df[[col]] == 1, na.rm = TRUE)
+  )
+}) %>% arrange(desc(take_up_rate))
+print(overall_df)
+
+# ---- 5) Build candidate “segment” variables (priority_metric EXCLUDED) ----
+names(df) <- trimws(names(df))
+
+exclude_keywords <- c("id","policy","policynumber","quote","address","email","phone","name")
+exclude_cols    <- c(present_boosts, "any_boost", "priority_metric", "no_boost")
+exclude_patterns <- "(?i)^(priority_metric|no_boost)($|_)"  
+
+
+is_excluded_name <- function(nm) {
+  str_detect(tolower(nm), paste0(exclude_keywords, collapse="|"))
+}
+
+# 5.2 allowed types for segments
+is_supported_col <- function(x) {
+  is.atomic(x) || inherits(x, c("Date","POSIXct","POSIXt","difftime","factor","ordered"))
+}
+
+# 5.3 robust distinct counter
+safe_n_distinct <- function(x) {
+  out <- try(dplyr::n_distinct(x, na.rm = TRUE), silent = TRUE)
+  if (inherits(out, "try-error")) dplyr::n_distinct(as.character(x), na.rm = TRUE) else out
+}
+
+all_cols <- setdiff(names(df), exclude_cols)                    
+all_cols <- all_cols[!is_excluded_name(all_cols)]               # drop name patterns (id/email/etc.)
+all_cols <- all_cols[!str_detect(all_cols, exclude_patterns)]   
+
+ok_type <- vapply(all_cols, function(nm) is_supported_col(df[[nm]]), logical(1))
+all_cols <- all_cols[ok_type]                                   
+
+ok_var  <- vapply(all_cols, function(nm) safe_n_distinct(df[[nm]]) > 1, logical(1))
+all_cols <- all_cols[ok_var]                                    
+
+ok_card <- vapply(all_cols, function(nm) {
+  x <- df[[nm]]
+  is.numeric(x) || safe_n_distinct(x) <= 50                     
+}, logical(1))
+
+cand_vars <- all_cols[ok_card]
+
+# ---- 6) Make categorical versions of candidate variables ----
+make_cat_by_name <- function(v, nm) {
+  # Special handling for boost_days_* columns
+  if (grepl("^boost_days_", nm, ignore.case = TRUE)) {
+    # Treat <=0 as "0"; then weekly/monthly bands up to 2 years, then 2y+
+    v2 <- ifelse(is.na(v), NA_real_, pmax(as.numeric(v), 0))
+    brks <- c(-Inf, 0, 7, 14, 21, 28, 60, 90, 180, 365, 730, Inf)
+    labs <- c("0", "1–7", "8–14", "15–21", "22–28", "29–60", "61–90",
+              "91–180", "181–365", "366–730", "731+")
+    return(as.character(cut(v2, breaks = brks, labels = labs,
+                            include_lowest = TRUE, right = TRUE)))
+  }
+  
+  if (inherits(v, c("POSIXct","POSIXt","Date","difftime"))) {
+    vm <- lubridate::floor_date(lubridate::as_datetime(v), unit = "month")
+    return(format(vm, "%Y-%m"))
+  }
+  
+  if (is.numeric(v)) {
+    nun <- dplyr::n_distinct(v, na.rm = TRUE)
+    if (nun > 10) {
+      pos <- v[is.finite(v)]
+      qs  <- unique(stats::quantile(pos, probs = seq(0, 1, length.out = 6), na.rm = TRUE, names = FALSE))
+      if (length(qs) < 4) {
+        rng <- range(pos, na.rm = TRUE)
+        qs  <- seq(rng[1], rng[2], length.out = 6)
+      }
+      return(as.character(cut(v, breaks = qs, include_lowest = TRUE, dig.lab = 12)))
+    } else {
+      return(as.character(v))
+    }
+  }
+  
+  as.character(v)
+}
+
+# Build cat_map using the new function (we pass the column name so we can branch)
+cat_map <- setNames(vector("list", length(cand_vars)), cand_vars)
+for (nm in cand_vars) {
+  cat_map[[nm]] <- make_cat_by_name(df[[nm]], nm)
+}
+
+# ---- 7) Segment lifts (for any_boost and each individual boost) ----
+segment_lifts <- function(data, target, cat_map, min_n = max(50, floor(0.01 * nrow(data)))) {
+  base <- mean(data[[target]] == 1, na.rm = TRUE)
+  if (is.na(base) || base <= 0) {
+    return(tibble(target=character(), variable=character(), category=character(),
+                  n=integer(), rate=double(), lift=double(), diff_pp=double()))
+  }
+  
+  rows <- vector("list", length(cat_map))
+  i <- 0L
+  
+  for (var in names(cat_map)) {
+    cats <- cat_map[[var]]
+    
+    tmp <- tibble(category = cats, tgt = data[[target]]) %>%
+      dplyr::filter(!is.na(category), !is.na(tgt)) %>%
+      dplyr::group_by(category) %>%
+      dplyr::summarise(
+        n    = dplyr::n(),
+        rate = mean(tgt == 1),
+        .groups = "drop"
+      ) %>%
+      dplyr::filter(n >= min_n)
+    
+    if (nrow(tmp) == 0) next
+    
+    tmp <- tmp %>%
+      dplyr::mutate(
+        lift    = rate / base,
+        diff_pp = (rate - base) * 100,
+        variable = var
+      ) %>%
+      dplyr::select(variable, category, n, rate, lift, diff_pp) %>%
+      dplyr::mutate(target = target, .before = 1)
+    
+    i <- i + 1L
+    rows[[i]] <- tmp
+  }
+  
+  if (i == 0L) {
+    tibble(target=character(), variable=character(), category=character(),
+           n=integer(), rate=double(), lift=double(), diff_pp=double())
+  } else {
+    dplyr::bind_rows(rows[seq_len(i)]) %>%
+      dplyr::arrange(dplyr::desc(lift), dplyr::desc(n))
+  }
+}
+
+targets <- c("any_boost", present_boosts)
+segments_df <- dplyr::bind_rows(lapply(targets, function(tgt) segment_lifts(df, tgt, cat_map)))
+segments_df <- segments_df %>% filter(!str_detect(variable, exclude_patterns))
+
+# ---- 8) Top segments tables ----
+top_segments <- function(seg_df, target, k = 15, min_lift = 1.10) {
+  sub <- seg_df %>% dplyr::filter(target == !!target)
+  if (nrow(sub) == 0) return(sub)
+  sub2 <- sub %>% dplyr::filter(lift >= min_lift) %>% dplyr::arrange(dplyr::desc(lift), dplyr::desc(n))
+  if (nrow(sub2) == 0) {
+    sub %>% dplyr::arrange(dplyr::desc(lift), dplyr::desc(n)) %>% dplyr::slice_head(n = k)
+  } else {
+    sub2 %>% dplyr::slice_head(n = k)
+  }
+}
+
+top_any <- top_segments(segments_df, "any_boost", k = 15) %>%
+  dplyr::mutate(
+    segment_rate_pct = round(100 * rate, 1),
+    base_rate_pct    = round(100 * (overall_df %>% dplyr::filter(boost == "any_boost") %>% dplyr::pull(take_up_rate)), 1),
+    lift             = round(lift, 2),
+    diff_pp          = round(diff_pp, 1)
+  ) %>%
+  dplyr::select(variable, category, n, segment_rate_pct, base_rate_pct, diff_pp, lift)
+print(top_any)
+
+top3_boosts <- overall_df %>%
+  dplyr::filter(boost != "any_boost") %>%
+  dplyr::arrange(dplyr::desc(take_up_rate)) %>%
+  dplyr::slice_head(n = 3) %>%
+  dplyr::pull(boost)
+
+top_by_boost <- dplyr::bind_rows(lapply(top3_boosts, function(b) {
+  base_rate <- overall_df %>% dplyr::filter(boost == b) %>% dplyr::pull(take_up_rate)
+  top_segments(segments_df, b, k = 12) %>%
+    dplyr::mutate(
+      which_boost       = b,
+      segment_rate_pct  = round(100 * rate, 1),
+      base_rate_pct     = round(100 * base_rate, 1),
+      lift              = round(lift, 2),
+      diff_pp           = round(diff_pp, 1)
+    ) %>%
+    dplyr::select(which_boost, variable, category, n, segment_rate_pct, base_rate_pct, diff_pp, lift)
+}))
+
+# Order boosts by overall uptake (highest first)
+boost_order <- overall_df %>%
+  dplyr::filter(boost != "any_boost") %>%
+  dplyr::arrange(dplyr::desc(take_up_rate)) %>%
+  dplyr::pull(boost)
+
+# Apply that boost order, then sort by lift (and n)
+top_by_boost_sorted <- top_by_boost %>%
+  dplyr::mutate(which_boost = factor(which_boost, levels = boost_order)) %>%
+  dplyr::arrange(which_boost, dplyr::desc(lift), dplyr::desc(n))
+
+print(top_by_boost_sorted, n = 40)
+
+# 1) Base rates per boost
+base_rates <- overall_df %>%
+  dplyr::filter(boost != "any_boost") %>%
+  dplyr::transmute(which_boost = boost, base_rate = take_up_rate)  # base_rate in [0,1]
+
+# 2) Use the categories that appear in your current top table
+top_keys <- top_by_boost_sorted %>%
+  dplyr::select(which_boost, variable, category)
+
+# 3) Pull exact rows (with unrounded rate in [0,1]) from segments_df
+seg_source <- segments_df %>%
+  dplyr::rename(which_boost = target) %>%
+  dplyr::inner_join(top_keys, by = c("which_boost", "variable", "category"))
+
+# 4) Aggregate rows for the same variable within each boost
+grouped_by_var <- seg_source %>%
+  dplyr::group_by(which_boost, variable) %>%
+  dplyr::summarise(
+    n            = sum(n, na.rm = TRUE),
+    successes    = sum(rate * n, na.rm = TRUE),
+    segment_rate = dplyr::if_else(n > 0, successes / n, NA_real_),
+    categories   = paste0(sort(unique(category)), collapse = " + "),
+    .groups      = "drop"
+  ) %>%
+  dplyr::left_join(base_rates, by = "which_boost") %>%
+  dplyr::mutate(
+    lift             = segment_rate / base_rate,
+    diff_pp          = (segment_rate - base_rate) * 100,
+    segment_rate_pct = round(100 * segment_rate, 1),
+    base_rate_pct    = round(100 * base_rate, 1),
+    lift             = round(lift, 2),
+    diff_pp          = round(diff_pp, 1)
+  ) %>%
+  # order boosts by overall uptake, then by lift (and n)
+  dplyr::mutate(which_boost = factor(which_boost, levels = boost_order)) %>%
+  dplyr::arrange(which_boost, dplyr::desc(lift), dplyr::desc(n)) %>%
+  dplyr::select(which_boost, variable, categories, n, segment_rate_pct, base_rate_pct, diff_pp, lift)
+
+print(grouped_by_var, n = 100)
+
+# ---- 9) Plots ----
+# Overall take-up by boost (including any_boost)
+overall_df %>%
+  ggplot2::ggplot(ggplot2::aes(x = forcats::fct_reorder(boost, take_up_rate), y = take_up_rate)) +
+  ggplot2::geom_col() +
+  ggplot2::coord_flip() +
+  ggplot2::scale_y_continuous(labels = scales::percent) +
+  ggplot2::labs(title = "Take-up rate by boost", x = NULL, y = "Rate")
+
+# Fallback if you only have `top_by_boost`
+if (!exists("top_by_boost_sorted") && exists("top_by_boost")) {
+  top_by_boost_sorted <- top_by_boost
+}
+
+# Column to show category text (works for both 'category' and aggregated 'categories')
+cat_col <- if ("categories" %in% names(top_by_boost_sorted)) "categories" else "category"
+
+# Per-boost variable exclusions
+excl <- list(
+  "boost_Extra_Cancellation" = c("boost_Extra_Cancellation", "extra_cancellation"),
+  "boost_Cruise_Cover"       = c("boost_Cruise_Cover",       "boost_days_Cruise_Cover"),
+  "boost_Snow_Sports"        = c("boost_Snow_Sports",        "boost_days_Snow_Sports", "convert_flag")
+)
+
+plot_lift_boost <- function(tbl, boost, excludes, cat_col = "category", top_n = 12) {
+  sub <- tbl %>%
+    dplyr::filter(which_boost == !!boost) %>%
+    dplyr::mutate(
+      variable = stringr::str_trim(variable),
+      cat_txt  = stringr::str_trim(.data[[cat_col]])
+    ) %>%
+    dplyr::filter(!variable %in% excludes) %>%
+    dplyr::arrange(dplyr::desc(lift), dplyr::desc(n)) %>%
+    dplyr::slice_head(n = top_n) %>%
+    dplyr::mutate(
+      seg_label_raw = paste0(variable, " — ", cat_txt),
+      seg_label     = forcats::fct_reorder(stringr::str_trunc(seg_label_raw, 70), lift)
+    )
+  
+  if (nrow(sub) == 0) {
+    message("No rows to plot for ", boost, " after exclusions.")
+    return(invisible(NULL))
+  }
+  
+  y_max <- max(sub$lift, na.rm = TRUE) * 1.12
+  
+  ggplot2::ggplot(sub, ggplot2::aes(x = seg_label, y = lift, fill = lift)) +
+    ggplot2::geom_col(width = 0.7, alpha = 0.95) +
+    ggplot2::geom_hline(yintercept = 1, linetype = "dashed", linewidth = 0.4) +
+    ggplot2::geom_text(ggplot2::aes(label = scales::number(lift, accuracy = 0.01)),
+                       hjust = -0.15, size = 3) +
+    ggplot2::coord_flip(ylim = c(0, y_max)) +
+    ggplot2::scale_fill_gradient(low = "#A8DADC", high = "#1D3557", guide = "none") +
+    ggplot2::labs(
+      title    = paste0("Lift by segment — ", boost),
+      subtitle = "Dashed line = baseline (lift = 1.00)",
+      x = NULL, y = "Lift (segment rate ÷ baseline)"
+    ) +
+    ggplot2::theme_minimal(base_size = 12) +
+    ggplot2::theme(
+      panel.grid.major.y = ggplot2::element_blank(),
+      panel.grid.minor   = ggplot2::element_blank(),
+      axis.text.y        = ggplot2::element_text(size = 10),
+      plot.title         = ggplot2::element_text(face = "bold"),
+      plot.subtitle      = ggplot2::element_text(color = "grey30")
+    )
+}
+
+# Build the three plots
+p_extra  <- plot_lift_boost(top_by_boost_sorted, "boost_Extra_Cancellation", excl[["boost_Extra_Cancellation"]], cat_col)
+p_cruise <- plot_lift_boost(top_by_boost_sorted, "boost_Cruise_Cover",       excl[["boost_Cruise_Cover"]],       cat_col)
+p_snow   <- plot_lift_boost(top_by_boost_sorted, "boost_Snow_Sports",        excl[["boost_Snow_Sports"]],        cat_col)
+
+# Show them as three separate plots
+print(p_extra)
+print(p_cruise)
+print(p_snow)
+```
+
+
+```{r xgboost_model_boosts, echo=FALSE, warning=FALSE, message=FALSE}
+# Split data into training and testing sets
+train_index <- createDataPartition(model_data_boosts$convert_flag, p = 0.8, list = FALSE)
+train_data <- model_data_boosts[train_index, ]
+test_data <- model_data_boosts[-train_index, ]
+
+# Separate features and target variable
+x_train <- as.matrix(train_data[, !names(train_data) %in% "convert_flag"])
+y_train <- train_data$convert_flag
+x_test <- as.matrix(test_data[, !names(test_data) %in% "convert_flag"])
+y_test <- test_data$convert_flag
+
+# Convert to xgboost DMatrix format (more efficient)
+dtrain <- xgb.DMatrix(data = x_train, label = y_train)
+dtest <- xgb.DMatrix(data = x_test, label = y_test)
+
+# Run Bayesian optimisation (HP TUNING)
+bayesian_results <- BayesianOptimization(
+  FUN = xgb_bayesian,
+  bounds = bounds,
+  init_points = 10,  
+  n_iter = 10,       
+  acq = "ucb",       
+  verbose = TRUE
+)
+
+# Extract best parameters from Bayesian optimization
+best_params <- bayesian_results$Best_Par
+
+# Create final parameter list
+final_params <- list(
+  objective = "binary:logistic",
+  eta = best_params["eta"],
+  max_depth = as.integer(best_params["max_depth"]),
+  min_child_weight = best_params["min_child_weight"],
+  subsample = best_params["subsample"],
+  colsample_bytree = best_params["colsample_bytree"],
+  gamma = best_params["gamma"],
+  scale_pos_weight = scale_pos_weight,
+  eval_metric = "logloss"
+)
+
+boost_model <- xgb.train(
+  params = final_params,
+  data = dtrain,
+  nrounds = 1000,
+  verbose = 1,
+  watchlist = list(train = dtrain, test = dtest),
+  early_stopping_rounds = 50
+)
+
+# UNCOMMENT IF MODEL AVAILABLE LOCALLY
+# boost_model <- xgb.load("conversions_boosts_xgboost_model.model")
+
+# Make predictions on test set
+test_predictions <- predict(boost_model, dtest)
+test_predictions_binary <- ifelse(test_predictions > 0.5, 1, 0)
+
+# Calculate comprehensive metrics
+conf_matrix <- confusionMatrix(as.factor(test_predictions_binary), as.factor(y_test))
+
+metrics <- list(
+  AUC = AUC(test_predictions, y_test),
+  Accuracy = conf_matrix$overall['Accuracy'],
+  Precision = Precision(y_test, test_predictions_binary, positive = 1),
+  Recall = Recall(y_test, test_predictions_binary, positive = 1),
+  F1_Score = F1_Score(y_test, test_predictions_binary, positive = 1),
+  Specificity = Specificity(y_test, test_predictions_binary, positive = 1)
+)
+
+# Print results
+cat("\nPerformance Metrics:\n")
+print(metrics)
+cat("\nConfusion Matrix:\n")
+print(conf_matrix$table)
+
+# ROC Curve
+roc_curve <- roc(y_test, test_predictions)
+plot(roc_curve, main = "ROC Curve - Test Set", col = "blue", lwd = 2)
+auc_value <- auc(roc_curve)
+cat("Test Set AUC:", auc_value, "\n")
+
+# Probability distribution by actual class
+par(mfrow = c(1, 2))
+hist(test_predictions[y_test == 1], main = "Probabilities - Converted", 
+     xlab = "Predicted Probability", col = "lightgreen", breaks = 20)
+hist(test_predictions[y_test == 0], main = "Probabilities - Not Converted", 
+     xlab = "Predicted Probability", col = "lightcoral", breaks = 20)
+
+# Get feature importance
+importance_matrix <- xgb.importance(
+  feature_names = colnames(x_train), 
+  model = boost_model
+)
+
+cat("\nTop 10 Most Important Features:\n")
+print(importance_matrix)
+
+# Plot feature importance
+par(mfrow = c(1, 1))
+xgb.plot.importance(importance_matrix, 
+                    main = "Boosts Feature Importance",
+                    xlab = 'Gain')
+
+
+
+# Compute SHAP values
+x_all <- as.matrix(model_data_boosts %>% dplyr::select(-convert_flag))
+shap_values=predict(boost_model, x_all, predcontrib = TRUE, approxcontrib = F)
+shap_df <- as.data.frame(shap_values)
+shap_df$BIAS <- NULL  
+colnames(shap_df) <- colnames(x_all)
+shap_importance <- data.frame(
+  Feature = names(shap_df),
+  MeanAbsSHAP = apply(abs(shap_df), 2, mean)
+)
+shap_importance <- shap_importance[order(shap_importance$MeanAbsSHAP, decreasing = TRUE), ]
+ggplot(shap_importance, aes(x = reorder(Feature, MeanAbsSHAP), y = MeanAbsSHAP)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Mean Absolute SHAP Values (Top 20 Features)",
+       x = "Feature", y = "Mean |SHAP|")
+shap_long <- shap.prep(
+  xgb_model = boost_model,
+  X_train = x_all
+)
+p <- shap.plot.summary(shap_long)
+ggsave("shap_summary_boosts.png", plot = p, width = 10, height = 8, dpi = 300)
+
+```
+
+
+# Sensitivity Analysis
+```{r sensitivity_analysis, echo=FALSE, warning=FALSE, message=FALSE}
+model_data <- model_data %>%
+  rename(genZ = `generation_Gen Z (18-28)`)
+
+get_mean_conversion <- function(model, data) {
+  preds <- if_else(predict(model, xgb.DMatrix(as.matrix(data))) > 0.65, 1, 0)
+  mean(preds)
+}
+
+# baseline
+baseline_mean <- get_mean_conversion(final_model, model_data %>% select(-convert_flag))
+
+# upsampling function
+simulate_upsample <- function(data, pct_increase, filter_expr) {
+  results <- list()
+  
+  subset_data <- data %>% filter(!!filter_expr)
+  n_to_add <- floor(pct_increase * nrow(subset_data))
+  
+  if (n_to_add > 0) {
+    set.seed(2025)
+    upsampled <- subset_data %>% sample_n(n_to_add, replace = TRUE)
+    data_mod <- bind_rows(data, upsampled)
+  } else {
+    data_mod <- data
+  }
+  
+  mean_pred <- get_mean_conversion(final_model, data_mod %>% select(-convert_flag))
+  return(mean_pred)
+}
+
+# scenarios
+scenarios <- list(
+  list(name = "GenZ + Spring",  filter = expr(genZ == 1 & holiday_trip_Spring == 1)),
+  list(name = "Family + Spring", filter = expr(family == 1 & holiday_trip_Spring == 1)),
+  list(name = "Family + Cruise", filter = expr(family == 1 & cruise == 1)),
+  list(name = "GenZ + Cruise",   filter = expr(genZ == 1 & cruise == 1))
+)
+
+
+pct_levels <- c(0.05, 0.10, 0.15)
+
+results <- expand.grid(
+  Scenario = sapply(scenarios, `[[`, "name"),
+  Pct_Change = pct_levels,
+  stringsAsFactors = FALSE
+) %>%
+  rowwise() %>%
+  mutate(
+    Mean_Pred_Conversion = {
+      scen_filter <- scenarios[[ which(sapply(scenarios, `[[`, "name") == Scenario) ]]$filter
+      
+      simulate_upsample(
+        model_data,
+        pct_increase = Pct_Change,
+        filter_expr = scen_filter
+      )
+    },
+    Change_vs_Baseline = (Mean_Pred_Conversion - baseline_mean) * 100
+  ) %>%
+  ungroup()
+
+
+baseline_df <- data.frame(
+  Scenario = "Baseline",
+  Pct_Change = 0,
+  Mean_Pred_Conversion = baseline_mean,
+  Change_vs_Baseline = 0
+)
+
+sensitivity_results <- bind_rows(baseline_df, results) %>%
+  mutate(Pct_Change = Pct_Change * 100) %>%
+  filter(Scenario != "Baseline")
+
+# plot
+ggplot(sensitivity_results, aes(x = Scenario,
+                    y = Change_vs_Baseline,
+                    fill = factor(Pct_Change))) +
+  geom_col(position = position_dodge(width = 0.8)) +
+  geom_hline(yintercept = 0, color = "gray40", linetype = "dashed") +
+  scale_y_continuous(labels = percent_format(accuracy = 1)) +
+  labs(
+    title = "Sensitivity Analysis of Target Groups",
+    x = "Target Group",
+    y = "Conversion Rate Uplift Relative to Baseline",
+    fill = "Increase in Group %"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 30, hjust = 1),
+    legend.position = "right")
+```
+
+
+For boosts specifically:
+```{r boost_sensitivity, echo=FALSE, warning=FALSE, message=FALSE}
+get_mean_conversion <- function(model, data) {
+  preds <- if_else(predict(model, xgb.DMatrix(as.matrix(data))) > 0.5, 1, 0)
+  mean(preds) / 1.296745
+}
+
+# ---- Function to simulate one scenario ----
+simulate_boost_scenario <- function(data, pct_change) {
+  results <- list()
+  
+  # # 1. boost_Extra_Cancellation: flip X% of 0s to 1
+  data_mod <- data
+  one_idx <- which(data_mod$boost_Extra_Cancellation == 0)
+  flip_n <- floor(pct_change * length(one_idx))
+  set.seed(2025)
+  flip_idx <- sample(one_idx, flip_n)
+  data_mod$boost_Extra_Cancellation[flip_idx] <- 1
+  results$boost_Extra_Cancellation <- get_mean_conversion(boost_model, data_mod %>% select(-convert_flag))
+  
+  # 2. boost_Existing_Medical_Condition: flip X% of 0s to 1
+  data_mod <- data
+  zero_idx <- which(data_mod$boost_Existing_Medical_Condition == 0)
+  flip_n <- floor(pct_change * length(zero_idx))
+  set.seed(2025)
+  flip_idx <- sample(zero_idx, flip_n)
+  data_mod$boost_Existing_Medical_Condition[flip_idx] <- 1
+  results$boost_Existing_Medical_Condition <- get_mean_conversion(boost_model, data_mod %>% select(-convert_flag))
+  
+  # 3. boost_Snow_Sports: flip X% of 0s to 1
+  data_mod <- data
+  zero_idx <- which(data_mod$boost_Snow_Sports == 0)
+  flip_n <- floor(pct_change * length(zero_idx))
+  set.seed(2025)
+  flip_idx <- sample(zero_idx, flip_n)
+  data_mod$boost_Snow_Sports[flip_idx] <- 1
+  results$boost_Snow_Sports <- get_mean_conversion(boost_model, data_mod %>% select(-convert_flag))
+  
+  # 4. boost_Gadget_Cover: flip X% of 0s to 1
+  data_mod <- data
+  zero_idx <- which(data_mod$boost_Gadget_Cover == 0)
+  flip_n <- floor(pct_change * length(zero_idx))
+  set.seed(2025)
+  flip_idx <- sample(zero_idx, flip_n)
+  data_mod$boost_Gadget_Cover[flip_idx] <- 1
+  results$boost_Gadget_Cover <- get_mean_conversion(boost_model, data_mod %>% select(-convert_flag))
+  
+  return(results)
+}
+
+# ---- Baseline ----
+baseline_mean <- get_mean_conversion(boost_model, model_data_boosts %>% select(-convert_flag))
+
+# ---- Run Scenarios ----
+pct_levels <- c(0.05, 0.10, 0.15)
+scenarios <- lapply(pct_levels, function(p) simulate_boost_scenario(model_data_boosts, p))
+names(scenarios) <- paste0("+", pct_levels*100, "%")
+
+# ---- Combine Results ----
+boost_sensitivity_results <- do.call(rbind, lapply(names(scenarios), function(name) {
+  df <- data.frame(
+    Scenario = name,
+    Variable = names(scenarios[[name]]),
+    Mean_Pred_Conversion = unlist(scenarios[[name]])
+  )
+  df$Change_vs_Baseline <- (df$Mean_Pred_Conversion - baseline_mean) * 100
+  df
+}))
+
+# ---- Add baseline ----
+boost_sensitivity_results <- rbind(
+  data.frame(Scenario = "Baseline", Variable = "All", 
+             Mean_Pred_Conversion = baseline_mean, Change_vs_Baseline = 0),
+  boost_sensitivity_results
+)
+
+boost_sensitivity_results <- boost_sensitivity_results %>%
+  filter(Scenario != "Baseline") %>%
+  mutate(Scenario = factor(Scenario, levels = c("+5%", "+10%", "+15%"))) %>%
+  mutate(Variable = str_remove(Variable, "^boost_"))
+
+print(boost_sensitivity_results)
+
+ggplot(boost_sensitivity_results,
+       aes(x = Variable, y = Change_vs_Baseline, fill = Scenario)) +
+  geom_col(position = position_dodge()) +
+  geom_hline(yintercept = 0, color = "gray40", linetype = "dashed") +
+  labs(
+    title = "Sensitivity of Predicted Conversion Rate to Boosts",
+    y = "Conversion Uplift Compared to Baseline",
+    x = "Boost"
+  ) +
+  coord_cartesian(ylim = c(-2, 10)) +
+  theme_minimal()
+```
