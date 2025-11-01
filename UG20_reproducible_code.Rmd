@@ -2908,6 +2908,7 @@ ggsave("shap_summary_boosts.png", plot = p, width = 10, height = 8, dpi = 300)
 
 
 # Sensitivity Analysis
+For GenZ, families, spring and cruises
 ```{r sensitivity_analysis, echo=FALSE, warning=FALSE, message=FALSE}
 model_data <- model_data %>%
   rename(genZ = `generation_Gen Z (18-28)`)
@@ -3001,99 +3002,62 @@ ggplot(sensitivity_results, aes(x = Scenario,
     legend.position = "right")
 ```
 
-
-For boosts specifically:
-```{r boost_sensitivity, echo=FALSE, warning=FALSE, message=FALSE}
-get_mean_conversion <- function(model, data) {
-  preds <- if_else(predict(model, xgb.DMatrix(as.matrix(data))) > 0.5, 1, 0)
-  mean(preds) / 1.296745
-}
-
-# ---- Function to simulate one scenario ----
-simulate_boost_scenario <- function(data, pct_change) {
-  results <- list()
-  
-  # # 1. boost_Extra_Cancellation: flip X% of 0s to 1
-  data_mod <- data
-  one_idx <- which(data_mod$boost_Extra_Cancellation == 0)
-  flip_n <- floor(pct_change * length(one_idx))
-  set.seed(2025)
-  flip_idx <- sample(one_idx, flip_n)
-  data_mod$boost_Extra_Cancellation[flip_idx] <- 1
-  results$boost_Extra_Cancellation <- get_mean_conversion(boost_model, data_mod %>% select(-convert_flag))
-  
-  # 2. boost_Existing_Medical_Condition: flip X% of 0s to 1
-  data_mod <- data
-  zero_idx <- which(data_mod$boost_Existing_Medical_Condition == 0)
-  flip_n <- floor(pct_change * length(zero_idx))
-  set.seed(2025)
-  flip_idx <- sample(zero_idx, flip_n)
-  data_mod$boost_Existing_Medical_Condition[flip_idx] <- 1
-  results$boost_Existing_Medical_Condition <- get_mean_conversion(boost_model, data_mod %>% select(-convert_flag))
-  
-  # 3. boost_Snow_Sports: flip X% of 0s to 1
-  data_mod <- data
-  zero_idx <- which(data_mod$boost_Snow_Sports == 0)
-  flip_n <- floor(pct_change * length(zero_idx))
-  set.seed(2025)
-  flip_idx <- sample(zero_idx, flip_n)
-  data_mod$boost_Snow_Sports[flip_idx] <- 1
-  results$boost_Snow_Sports <- get_mean_conversion(boost_model, data_mod %>% select(-convert_flag))
-  
-  # 4. boost_Gadget_Cover: flip X% of 0s to 1
-  data_mod <- data
-  zero_idx <- which(data_mod$boost_Gadget_Cover == 0)
-  flip_n <- floor(pct_change * length(zero_idx))
-  set.seed(2025)
-  flip_idx <- sample(zero_idx, flip_n)
-  data_mod$boost_Gadget_Cover[flip_idx] <- 1
-  results$boost_Gadget_Cover <- get_mean_conversion(boost_model, data_mod %>% select(-convert_flag))
-  
-  return(results)
-}
-
-# ---- Baseline ----
-baseline_mean <- get_mean_conversion(boost_model, model_data_boosts %>% select(-convert_flag))
-
-# ---- Run Scenarios ----
-pct_levels <- c(0.05, 0.10, 0.15)
-scenarios <- lapply(pct_levels, function(p) simulate_boost_scenario(model_data_boosts, p))
-names(scenarios) <- paste0("+", pct_levels*100, "%")
-
-# ---- Combine Results ----
-boost_sensitivity_results <- do.call(rbind, lapply(names(scenarios), function(name) {
-  df <- data.frame(
-    Scenario = name,
-    Variable = names(scenarios[[name]]),
-    Mean_Pred_Conversion = unlist(scenarios[[name]])
-  )
-  df$Change_vs_Baseline <- (df$Mean_Pred_Conversion - baseline_mean) * 100
-  df
-}))
-
-# ---- Add baseline ----
-boost_sensitivity_results <- rbind(
-  data.frame(Scenario = "Baseline", Variable = "All", 
-             Mean_Pred_Conversion = baseline_mean, Change_vs_Baseline = 0),
-  boost_sensitivity_results
+For east asia and large groups
+```{r sensitivity_analysis2, echo=FALSE, warning=FALSE, message=FALSE}
+#  scenarios for east asia and large groups
+scenarios <- list(
+  list(name = "East Asia", filter = expr(east_asia == 1)),
+  list(name = "Large Groups", filter = expr(number_travellers > 5)),
+  list(name = "East Asia & Large Groups", filter = expr((east_asia == 1) & number_travellers > 5))
 )
 
-boost_sensitivity_results <- boost_sensitivity_results %>%
-  filter(Scenario != "Baseline") %>%
-  mutate(Scenario = factor(Scenario, levels = c("+5%", "+10%", "+15%"))) %>%
-  mutate(Variable = str_remove(Variable, "^boost_"))
+results <- expand.grid(
+  Scenario = sapply(scenarios, `[[`, "name"),
+  Pct_Change = pct_levels,
+  stringsAsFactors = FALSE
+) %>%
+  rowwise() %>%
+  mutate(
+    Mean_Pred_Conversion = {
+      scen_filter <- scenarios[[ which(sapply(scenarios, `[[`, "name") == Scenario) ]]$filter
+      
+      simulate_upsample(
+        model_data,
+        pct_increase = Pct_Change,
+        filter_expr = scen_filter
+      )
+    },
+    Change_vs_Baseline = (Mean_Pred_Conversion - baseline_mean) * 100
+  ) %>%
+  ungroup()
 
-print(boost_sensitivity_results)
+baseline_df <- data.frame(
+  Scenario = "Baseline",
+  Pct_Change = 0,
+  Mean_Pred_Conversion = baseline_mean,
+  Change_vs_Baseline = 0
+)
 
-ggplot(boost_sensitivity_results,
-       aes(x = Variable, y = Change_vs_Baseline, fill = Scenario)) +
-  geom_col(position = position_dodge()) +
+sensitivity_results <- bind_rows(baseline_df, results) %>%
+  mutate(Pct_Change = Pct_Change * 100) %>%
+  filter(Scenario != "Baseline")
+
+# plot
+ggplot(sensitivity_results, aes(x = Scenario,
+                    y = Change_vs_Baseline,
+                    fill = factor(Pct_Change))) +
+  geom_col(position = position_dodge(width = 0.8)) +
   geom_hline(yintercept = 0, color = "gray40", linetype = "dashed") +
+  scale_y_continuous(labels = scales::percent_format(scale = 1)) +
   labs(
-    title = "Sensitivity of Predicted Conversion Rate to Boosts",
-    y = "Conversion Uplift Compared to Baseline",
-    x = "Boost"
+    title = "Sensitivity Analysis: East Asia & Large Groups",
+    x = "Target Group",
+    y = "Conversion Rate Uplift Relative to Baseline",
+    fill = "Increase in Group %"
   ) +
-  coord_cartesian(ylim = c(-2, 10)) +
-  theme_minimal()
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 30, hjust = 1),
+    legend.position = "right")
 ```
+
